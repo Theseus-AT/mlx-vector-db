@@ -26,6 +26,8 @@
    git clone <dein-repository-url>
    cd mlx-vector-db
    pip install -r requirements.txt
+   ```
+
 
 2. Server starten:
 
@@ -43,7 +45,7 @@ Der Server läuft standardmäßig unter http://localhost:8000.
 4. Beispiel: Store erstellen und Vektoren hinzufügen (Python requests)
 
 Python
-
+```
 import requests
 import numpy as np
 
@@ -87,6 +89,7 @@ query_payload = {
 }
 response = requests.post(f"{BASE_URL}/vectors/query", json=query_payload)
 print("Abfrageergebnisse:", response.json())
+```
 🛠️ API Übersicht
 Die API ist in zwei Hauptbereiche unterteilt:
 
