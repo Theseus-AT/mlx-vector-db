@@ -1,33 +1,28 @@
 # 🧠 MLXVectorDB für `mlx-langchain-lite`
 
-Diese Vektordatenbank ist ein leichtgewichtiges, lokal laufendes Modul zur Verwaltung und Abfrage von Embeddings im Rahmen von **`mlx-langchain-lite`** – einem vollständig lokalen RAG-System für MLX-kompatible Modelle.
+**MLXVectorDB** ist eine leichtgewichtige, lokal laufende Vektordatenbank zur Verwaltung und Abfrage von Embeddings mit Fokus auf MLX (Apple Silicon & Linux). Sie wurde speziell für den Einsatz in lokalen RAG-Systemen wie `mlx-langchain-lite`, Multi-User-Umgebungen und datenschutzfreundlichen Anwendungen entwickelt.
 
 ---
 
-## 🧭 Zielsetzung
+## 🌟 Features
 
-Diese Datenbank wurde speziell für:
-- lokale MLX-Projekte (Apple Silicon & Linux),
-- Multi-User-Umgebungen,
-- agentenbasierte RAG-Szenarien und
-- datenschutzfreundliche KMU-Anwendungen
-
-entwickelt.
+* **MLX-optimiert:** Nutzt `mlx.core` für effiziente Vektoroperationen auf unterstützter Hardware.
+* **Lokal & Privat:** Alle Daten bleiben lokal auf deinem System.
+* **API-basiert:** Einfache Integration über eine FastAPI-basierte REST-API.
+* **Multi-Store:** Unterstützt separate Stores für verschiedene Benutzer und Modelle.
+* **Metadaten-Filterung:** Ermöglicht das Filtern von Suchergebnissen basierend auf Metadaten.
+* **Import/Export:** Einfaches Sichern und Wiederherstellen von Stores über ZIP-Dateien.
+* **Batch & Streaming:** Effiziente Verarbeitung mehrerer Abfragen.
 
 ---
 
-## 🗂️ Struktur
+## 🚀 Schnellstart
 
-```bash
-mlx_vector_db/
-├── storage/
-│   ├── user_<id>_<modell>/
-│   │   ├── vectors.npz
-│   │   ├── metadata.jsonl
-│   │   └── index.pkl
-├── vector_store.py        # Vektor-Indexierung, Einfügen, Abfragen
-├── embedding_engine.py    # MLX-Encoder für Text → Embedding
-├── rag_handler.py         # Prompt-Zusammenbau, RAG-Logik
-├── batch_dispatcher.py    # Batch-Verarbeitung für parallele Agentenanfragen
-├── README.md
-└── LICENSE
+**1. Installation:**
+
+   Klone das Repository und installiere die Abhängigkeiten:
+
+   ```bash
+   git clone <dein-repository-url>
+   cd mlx-vector-db
+   pip install -r requirements.txt
