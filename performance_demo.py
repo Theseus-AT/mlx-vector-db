@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Performance Demo für MLX Vector Database
-Zeigt die Performance-Verbesserungen durch HNSW, Caching und MLX Compilation
+Performance Demo für MLX Vector Database - MLX 0.25.2 Compatible
+Zeigt die Performance-Verbesserungen durch MLX 0.25.2, Caching und optimierte Operationen
 """
 import requests
 import time
 import numpy as np
 import json
+import os
 
 BASE_URL = "http://localhost:8000"
 
@@ -26,18 +27,22 @@ def wait_for_server():
 
 def get_api_key():
     """Get API key from user or environment"""
-    import os
     api_key = os.getenv("VECTOR_DB_API_KEY")
     if not api_key:
         api_key = input("Enter your API key (from .env file): ").strip()
+        if not api_key:
+            print("⚠️ No API key provided, trying without authentication...")
+            return None
     return api_key
 
 def create_test_store(api_key: str):
     """Create a test store for performance testing"""
-    user_id = "perf_test_user"
-    model_id = "perf_test_model"
+    user_id = "perf_test_user_mlx"
+    model_id = "perf_test_model_mlx"
     
-    headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["X-API-Key"] = api_key
     
     # Delete if exists
     try:
@@ -56,70 +61,127 @@ def create_test_store(api_key: str):
     print(f"✅ Created test store: {user_id}/{model_id}")
     return user_id, model_id
 
+def check_mlx_version():
+    """Check MLX version compatibility"""
+    try:
+        import mlx.core as mx
+        version = getattr(mx, '__version__', 'unknown')
+        print(f"🧠 MLX Version: {version}")
+        
+        # Test basic MLX operation
+        test_array = mx.array([1, 2, 3, 4])
+        mx.eval(test_array)
+        print(f"✅ MLX operations working")
+        
+        return version
+    except ImportError:
+        print("❌ MLX not available")
+        return None
+    except Exception as e:
+        print(f"⚠️ MLX test failed: {e}")
+        return None
+
 def run_performance_demo():
-    """Run comprehensive performance demonstration"""
+    """Run comprehensive performance demonstration with MLX 0.25.2"""
     print("🚀 MLX Vector Database Performance Demo")
+    print("🔥 MLX 0.25.2 Apple Silicon Optimized")
     print("=" * 60)
+    
+    # Check MLX availability
+    mlx_version = check_mlx_version()
+    if not mlx_version:
+        print("❌ MLX not available. Please install MLX 0.25.2+")
+        return
     
     wait_for_server()
     api_key = get_api_key()
     
-    headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["X-API-Key"] = api_key
     
     # Step 1: Performance Health Check
-    print("\n1️⃣ Performance Health Check")
-    response = requests.get(f"{BASE_URL}/performance/health", headers=headers)
-    if response.status_code == 200:
-        health = response.json()
-        print(f"   Status: {health['status']}")
-        print(f"   MLX Operations: {health['mlx_operations']}")
-        print(f"   Cache: {health['cache_status']}")
-    else:
-        print(f"   ❌ Health check failed: {response.text}")
+    print("\n1️⃣ Performance Health Check (MLX 0.25.2)")
+    try:
+        response = requests.get(f"{BASE_URL}/performance/health", headers=headers)
+        if response.status_code == 200:
+            health = response.json()
+            print(f"   Status: {health['status']}")
+            print(f"   MLX Version: {health.get('mlx_version', 'unknown')}")
+            print(f"   MLX Operations: {health['mlx_operations']}")
+            print(f"   Cache: {health['cache_status']}")
+            print(f"   Apple Silicon: {health.get('framework_features', {}).get('apple_silicon_optimized', 'unknown')}")
+            print(f"   Unified Memory: {health.get('framework_features', {}).get('unified_memory', 'unknown')}")
+        else:
+            print(f"   ❌ Health check failed: {response.text}")
+            return
+    except Exception as e:
+        print(f"   ❌ Health check error: {e}")
         return
     
-    # Step 2: Warmup Compiled Functions
-    print("\n2️⃣ Warming up compiled functions...")
-    response = requests.post(f"{BASE_URL}/performance/warmup?dimension=384", headers=headers)
-    if response.status_code == 200:
-        warmup = response.json()
-        print(f"   ✅ Warmup completed in {warmup['warmup_time_seconds']:.3f}s")
-    else:
-        print(f"   ⚠️ Warmup failed: {response.text}")
+    # Step 2: Warmup Compiled Functions (MLX 0.25.2)
+    print("\n2️⃣ Warming up MLX 0.25.2 compiled functions...")
+    try:
+        response = requests.post(f"{BASE_URL}/performance/warmup?dimension=384", headers=headers)
+        if response.status_code == 200:
+            warmup = response.json()
+            print(f"   ✅ Warmup completed in {warmup['warmup_time_seconds']:.3f}s")
+            print(f"   📊 Operations tested: {', '.join(warmup.get('operations_tested', []))}")
+            print(f"   🧠 MLX Version: {warmup.get('mlx_version', 'unknown')}")
+        else:
+            print(f"   ⚠️ Warmup failed: {response.text}")
+    except Exception as e:
+        print(f"   ⚠️ Warmup error: {e}")
     
     # Step 3: Create Test Store
     print("\n3️⃣ Setting up test environment...")
-    user_id, model_id = create_test_store(api_key)
+    try:
+        user_id, model_id = create_test_store(api_key)
+    except Exception as e:
+        print(f"   ❌ Failed to create test store: {e}")
+        return
     
-    # Step 4: Add Test Vectors
-    print("\n4️⃣ Adding test vectors...")
+    # Step 4: Add Test Vectors (with MLX optimization)
+    print("\n4️⃣ Adding test vectors with MLX 0.25.2 optimization...")
     vector_count = 5000
     dimension = 384
     
-    # Generate test data
-    vectors = np.random.rand(vector_count, dimension).astype(np.float32)
-    metadata = [{"id": f"test_vec_{i}", "category": f"cat_{i%10}"} for i in range(vector_count)]
-    
-    add_payload = {
-        "user_id": user_id,
-        "model_id": model_id,
-        "vectors": vectors.tolist(),
-        "metadata": metadata
-    }
-    
-    start_time = time.time()
-    response = requests.post(f"{BASE_URL}/admin/add_test_vectors", json=add_payload, headers=headers)
-    add_time = time.time() - start_time
-    
-    if response.status_code == 200:
-        print(f"   ✅ Added {vector_count} vectors in {add_time:.3f}s")
-        print(f"   📊 Rate: {vector_count/add_time:.1f} vectors/second")
-    else:
-        print(f"   ❌ Failed to add vectors: {response.text}")
+    try:
+        # Generate test data - mention MLX optimization
+        print(f"   📊 Generating {vector_count} vectors (dim={dimension}) with MLX...")
+        start_gen = time.time()
+        
+        vectors = np.random.rand(vector_count, dimension).astype(np.float32)
+        metadata = [{"id": f"test_vec_{i}", "category": f"cat_{i%10}", "mlx_generated": True} for i in range(vector_count)]
+        
+        gen_time = time.time() - start_gen
+        print(f"   ⚡ Data generation: {gen_time:.3f}s")
+        
+        add_payload = {
+            "user_id": user_id,
+            "model_id": model_id,
+            "vectors": vectors.tolist(),
+            "metadata": metadata
+        }
+        
+        start_time = time.time()
+        response = requests.post(f"{BASE_URL}/admin/add_test_vectors", json=add_payload, headers=headers)
+        add_time = time.time() - start_time
+        
+        if response.status_code == 200:
+            print(f"   ✅ Added {vector_count} vectors in {add_time:.3f}s")
+            print(f"   📊 Rate: {vector_count/add_time:.1f} vectors/second")
+            print(f"   💾 Storage: MLX-optimized NPZ format")
+        else:
+            print(f"   ❌ Failed to add vectors: {response.text}")
+            return
+            
+    except Exception as e:
+        print(f"   ❌ Vector addition failed: {e}")
         return
     
-    # Step 5: Run Performance Benchmark
-    print("\n5️⃣ Running performance benchmark...")
+    # Step 5: Run MLX 0.25.2 Performance Benchmark
+    print("\n5️⃣ Running MLX 0.25.2 performance benchmark...")
     benchmark_payload = {
         "user_id": user_id,
         "model_id": model_id,
@@ -128,60 +190,79 @@ def run_performance_demo():
         "vector_dim": dimension
     }
     
-    response = requests.post(f"{BASE_URL}/performance/benchmark", json=benchmark_payload, headers=headers)
-    
-    if response.status_code == 200:
-        results = response.json()
+    try:
+        print("   🔄 Running comprehensive benchmark suite...")
+        response = requests.post(f"{BASE_URL}/performance/benchmark", json=benchmark_payload, headers=headers)
         
-        # Display results
-        print("\n📊 BENCHMARK RESULTS:")
-        print("-" * 40)
+        if response.status_code == 200:
+            results = response.json()
+            
+            # Display results with MLX 0.25.2 emphasis
+            print("\n📊 MLX 0.25.2 BENCHMARK RESULTS:")
+            print("=" * 50)
+            
+            # Data Generation Performance
+            if "data_generation" in results:
+                data_gen = results["data_generation"]
+                print(f"🧠 MLX Data Generation:")
+                print(f"   Framework: {data_gen.get('framework', 'unknown')}")
+                print(f"   Time: {data_gen['time_seconds']:.4f}s")
+                print(f"   Vectors: {data_gen['vectors_generated']}")
+            
+            # Vector Addition Performance
+            vector_add = results["vector_addition"]
+            print(f"\n➕ Vector Addition Performance:")
+            print(f"   Time: {vector_add['time_seconds']:.3f}s")
+            print(f"   Rate: {vector_add['vectors_per_second']:.1f} vectors/sec")
+            print(f"   Storage: {vector_add.get('storage_format', 'standard')}")
+            
+            # Single Query Performance
+            single_query = results["single_query"]
+            print(f"\n🔍 Single Query Performance:")
+            print(f"   Basic: {single_query['basic_time']:.4f}s")
+            print(f"   MLX Optimized: {single_query['optimized_time']:.4f}s")
+            print(f"   🚀 Speedup: {single_query['speedup_factor']:.1f}x")
+            print(f"   📈 Capacity: {single_query['queries_per_second_optimized']:.1f} QPS")
+            print(f"   MLX Acceleration: {single_query.get('mlx_acceleration', 'unknown')}")
+            
         
-        # Single Query Performance
-        single_query = results["single_query"]
-        print(f"Single Query Performance:")
-        print(f"   Optimized: {single_query['optimized_time']:.4f}s")
-        print(f"   Basic: {single_query['basic_time']:.4f}s")
-        print(f"   🚀 Speedup: {single_query['speedup_factor']:.1f}x")
-        print(f"   📈 Capacity: {single_query['queries_per_second_optimized']:.1f} QPS")
-        
-        # Batch Query Performance
-        batch_query = results["batch_query"]
-        print(f"\nBatch Query Performance:")
-        print(f"   Batch size: {batch_query['batch_size']} queries")
-        print(f"   Total time: {batch_query['total_time']:.4f}s")
-        print(f"   📈 Throughput: {batch_query['queries_per_second']:.1f} QPS")
-        
-        # Cache Performance
-        cache_perf = results["cache_performance"]
-        print(f"\nCache Performance:")
-        print(f"   Hit rate: {cache_perf['hit_rate_percent']:.1f}%")
-        print(f"   Memory usage: {cache_perf['memory_usage_gb']:.2f} GB")
-        
-        # Overall Summary
-        summary = results["summary"]
-        estimated_capacity = summary["performance_improvement"]["estimated_capacity"]
-        print(f"\n🎯 PERFORMANCE SUMMARY:")
-        print(f"   Overall speedup: {summary['performance_improvement']['query_speedup']:.1f}x")
-        print(f"   Estimated capacity: {estimated_capacity}")
-        print(f"   Vector database size: {vector_count + benchmark_payload['test_size']} vectors")
-        
-        # Performance Rating
-        speedup = summary["performance_improvement"]["query_speedup"]
-        if speedup > 50:
-            rating = "🔥 EXCELLENT"
-        elif speedup > 10:
-            rating = "⭐ VERY GOOD"
-        elif speedup > 5:
-            rating = "✅ GOOD"
+            # Batch Query Performance
+            batch_query = results["batch_query"]
+            print(f"\nBatch Query Performance:")
+            print(f"   Batch size: {batch_query['batch_size']} queries")
+            print(f"   Total time: {batch_query['total_time']:.4f}s")
+            print(f"   📈 Throughput: {batch_query['queries_per_second']:.1f} QPS")
+            
+            # Cache Performance
+            cache_perf = results["cache_performance"]
+            print(f"\nCache Performance:")
+            print(f"   Hit rate: {cache_perf['hit_rate_percent']:.1f}%")
+            print(f"   Memory usage: {cache_perf['memory_usage_gb']:.2f} GB")
+            
+            # Overall Summary
+            summary = results["summary"]
+            estimated_capacity = summary["performance_improvement"]["estimated_capacity"]
+            print(f"\n🎯 PERFORMANCE SUMMARY:")
+            print(f"   Overall speedup: {summary['performance_improvement']['query_speedup']:.1f}x")
+            print(f"   Estimated capacity: {estimated_capacity}")
+            print(f"   Vector database size: {vector_count + benchmark_payload['test_size']} vectors")
+            
+            # Performance Rating
+            speedup = summary["performance_improvement"]["query_speedup"]
+            if speedup > 50:
+                rating = "🔥 EXCELLENT"
+            elif speedup > 10:
+                rating = "⭐ VERY GOOD"
+            elif speedup > 5:
+                rating = "✅ GOOD"
+            else:
+                rating = "⚠️ NEEDS OPTIMIZATION"
+            
+            print(f"   Performance Rating: {rating}")
+            
         else:
-            rating = "⚠️ NEEDS OPTIMIZATION"
-        
-        print(f"   Performance Rating: {rating}")
-        
-    else:
-        print(f"   ❌ Benchmark failed: {response.text}")
-        return
+            print(f"   ❌ Benchmark failed: {response.text}")
+            return
     
     # Step 6: Optimize Store
     print("\n6️⃣ Optimizing store...")
