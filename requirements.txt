@@ -1,7 +1,30 @@
-fastapi==0.95.1
-uvicorn==0.22.0
-numpy==1.24.3
-pydantic==1.10.7
-filelock==3.11.0
-requests==2.32.3
-mlx  # Angenommene Version, ersetze durch die tatsächliche Version, falls benötigt
+# MLX Vector Database Dependencies
+# Core Framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.0.0
+
+# Configuration
+python-dotenv>=1.0.0
+
+# ML & Computation - Updated to latest MLX versions
+mlx>=0.25.2
+numpy>=1.26.0
+
+# Utilities
+filelock>=3.13.0
+requests>=2.31.0
+python-multipart>=0.0.6
+
+# Monitoring & System
+psutil>=5.9.0
+
+# Development & Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+
+# Optional: For production deployment
+gunicorn>=21.2.0
+
+# Optional: For advanced monitoring (uncomment if needed)
+# prometheus-client>=0.17.0
