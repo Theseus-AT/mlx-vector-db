@@ -263,6 +263,11 @@ def run_performance_demo():
         else:
             print(f"   ❌ Benchmark failed: {response.text}")
             return
+        
+    except Exception as e:
+        print(f"   ❌ Fehler während des Performance Benchmarks: {e}")
+        # Optional: return oder andere Fehlerbehandlung
+        return
     
     # Step 6: Optimize Store
     print("\n6️⃣ Optimizing store...")
