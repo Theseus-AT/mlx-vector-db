@@ -93,7 +93,6 @@ Documentation = "https://github.com/Theseus-AT/mlx-vector-db#readme"
 "Source Code" = "https://github.com/Theseus-AT/mlx-vector-db"
 
 [tool.setuptools]
-# Basierend auf deiner Repository-Struktur
 py-modules = [
     "main", 
     "app",
@@ -110,31 +109,5 @@ py-modules = [
     "*.yaml", 
     "*.yml", 
     "*.json",
-    "*.env.example",
     "requirements.txt"
-]
-
-[tool.black]
-line-length = 88
-target-version = ["py39"]
-include = "\.pyi?$"
-
-[tool.isort]
-profile = "black"
-multi_line_output = 3
-line_length = 88
-
-[tool.mypy]
-python_version = "3.9"
-warn_return_any = true
-warn_unused_configs = true
-
-[tool.pytest.ini_options]
-minversion = "7.0"
-addopts = "-ra -q --strict-markers"
-testpaths = ["tests"]
-markers = [
-    "slow: marks tests as slow",
-    "integration: marks tests as integration tests", 
-    "unit: marks tests as unit tests"
 ]
