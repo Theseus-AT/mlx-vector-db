@@ -6,12 +6,24 @@ build-backend = "setuptools.build_meta"
 name = "mlx-vector-db"
 version = "0.1.0"
 authors = [
-    {name = "Theseus-AT"},
+    {name = "Theseus-AT"}
 ]
 description = "High-Performance Vector Database optimized for Apple Silicon with MLX"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "Apache-2.0"}
+keywords = [
+    "vector-database",
+    "mlx", 
+    "apple-silicon",
+    "machine-learning",
+    "similarity-search",
+    "embeddings",
+    "rag",
+    "retrieval-augmented-generation",
+    "fastapi",
+    "high-performance"
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -23,19 +35,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
-    "Topic :: Database :: Database Engines/Servers",
-]
-keywords = [
-    "vector-database",
-    "mlx", 
-    "apple-silicon",
-    "machine-learning",
-    "similarity-search",
-    "embeddings",
-    "rag",
-    "retrieval-augmented-generation",
-    "fastapi",
-    "high-performance",
+    "Topic :: Database :: Database Engines/Servers"
 ]
 dependencies = [
     "mlx>=0.25.2",
@@ -49,8 +49,7 @@ dependencies = [
     "psutil>=5.9.0",
     "structlog>=23.1.0",
     "rich>=13.0.0",
-    "orjson>=3.9.0",
-    "asyncio-throttle>=1.0.2",
+    "orjson>=3.9.0"
 ]
 
 [project.optional-dependencies]
@@ -62,12 +61,12 @@ dev = [
     "isort>=5.12.0",
     "flake8>=6.0.0",
     "mypy>=1.6.0",
-    "pre-commit>=3.4.0",
+    "pre-commit>=3.4.0"
 ]
 monitoring = [
     "prometheus-client>=0.17.0",
     "memory-profiler>=0.61.0",
-    "py-spy>=0.3.14",
+    "py-spy>=0.3.14"
 ]
 all = [
     "pytest>=7.4.0",
@@ -80,7 +79,7 @@ all = [
     "pre-commit>=3.4.0",
     "prometheus-client>=0.17.0",
     "memory-profiler>=0.61.0",
-    "py-spy>=0.3.14",
+    "py-spy>=0.3.14"
 ]
 
 [project.scripts]
@@ -94,17 +93,31 @@ Documentation = "https://github.com/Theseus-AT/mlx-vector-db#readme"
 "Source Code" = "https://github.com/Theseus-AT/mlx-vector-db"
 
 [tool.setuptools]
-# Automatisch alle Python-Dateien im Root-Verzeichnis finden
-py-modules = ["main", "app", "config", "performance_demo", "demo", "enterprise_demo"]
+# Basierend auf deiner Repository-Struktur
+py-modules = [
+    "main", 
+    "app",
+    "config", 
+    "demo", 
+    "performance_demo", 
+    "enterprise_demo"
+]
 
 [tool.setuptools.package-data]
-"*" = ["*.md", "*.txt", "*.yaml", "*.yml", "*.json", "*.env.example"]
+"*" = [
+    "*.md", 
+    "*.txt", 
+    "*.yaml", 
+    "*.yml", 
+    "*.json",
+    "*.env.example",
+    "requirements.txt"
+]
 
-# Development tools configuration
 [tool.black]
 line-length = 88
-target-version = ['py39']
-include = '\.pyi?
+target-version = ["py39"]
+include = "\.pyi?$"
 
 [tool.isort]
 profile = "black"
@@ -115,3 +128,13 @@ line_length = 88
 python_version = "3.9"
 warn_return_any = true
 warn_unused_configs = true
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q --strict-markers"
+testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow",
+    "integration: marks tests as integration tests", 
+    "unit: marks tests as unit tests"
+]
