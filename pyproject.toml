@@ -1,0 +1,127 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mlx-vector-db"
+version = "0.1.0"
+authors = [
+    {name = "Theseus-AT", email = "fischer@theseus.at"},
+]
+description = "High-Performance Vector Database optimized for Apple Silicon with MLX"
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research", 
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Database :: Database Engines/Servers",
+]
+keywords = [
+    "vector-database",
+    "mlx", 
+    "apple-silicon",
+    "machine-learning",
+    "similarity-search",
+    "embeddings",
+    "rag",
+    "retrieval-augmented-generation",
+    "fastapi",
+    "high-performance",
+]
+dependencies = [
+    "mlx>=0.25.2",
+    "numpy>=1.24.0",
+    "fastapi>=0.100.0",
+    "uvicorn[standard]>=0.23.0",
+    "pydantic>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "aiohttp>=3.8.0",
+    "requests>=2.31.0",
+    "psutil>=5.9.0",
+    "structlog>=23.1.0",
+    "rich>=13.0.0",
+    "orjson>=3.9.0",
+    "asyncio-throttle>=1.0.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.9.0",
+    "isort>=5.12.0",
+    "flake8>=6.0.0",
+    "mypy>=1.6.0",
+    "pre-commit>=3.4.0",
+]
+monitoring = [
+    "prometheus-client>=0.17.0",
+    "memory-profiler>=0.61.0",
+    "py-spy>=0.3.14",
+]
+all = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.9.0",
+    "isort>=5.12.0",
+    "flake8>=6.0.0",
+    "mypy>=1.6.0",
+    "pre-commit>=3.4.0",
+    "prometheus-client>=0.17.0",
+    "memory-profiler>=0.61.0",
+    "py-spy>=0.3.14",
+]
+
+[project.scripts]
+mlx-vector-db = "main:main"
+mlxvdb = "main:main"
+
+[project.urls]
+Homepage = "https://github.com/Theseus-AT/mlx-vector-db"
+"Bug Tracker" = "https://github.com/Theseus-AT/mlx-vector-db/issues"
+Documentation = "https://github.com/Theseus-AT/mlx-vector-db#readme"
+"Source Code" = "https://github.com/Theseus-AT/mlx-vector-db"
+
+[tool.setuptools]
+packages = ["mlx_vector_db"]
+
+[tool.setuptools.package-data]
+"*" = ["*.md", "*.txt", "*.yaml", "*.yml", "*.json"]
+
+# Development tools configuration
+[tool.black]
+line-length = 88
+target-version = ['py39']
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 88
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q --strict-markers"
+testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+]
