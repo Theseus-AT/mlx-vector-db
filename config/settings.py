@@ -1,23 +1,17 @@
-# config/settings.py
+# config/settings.py - Kompletter korrigierter Header
 """
 Erweitertes Konfigurationsmanagement für MLX Vector Database.
 Unterstützt Umgebungsvariablen, .env-Datei und optionale JSON-Konfigurationsdateien.
 """
 import os
 import json
-from typing import Any, Dict, Optional, List, Callable # Callable hinzugefügt
+import threading
+from typing import Any, Dict, Optional, List, Callable
 from pathlib import Path
 from dataclasses import dataclass, field
+from datetime import datetime
 import logging
 from dotenv import load_dotenv
-
-# Annahme: security.auth existiert und hat die benötigten Dependency-Funktionen
-# Dies ist für die dynamische Zuweisung von Dependencies in main.py relevant.
-# Für den Moment lassen wir die direkten Imports von Depends hier weg,
-# da settings.py selbst keine FastAPI-Abhängigkeiten haben sollte.
-# Die main.py würde die Strings dann zu tatsächlichen Depends-Objekten auflösen.
-# from fastapi import Depends
-# from security.auth import verify_admin_api_key, get_current_user_payload # Beispiel
 
 logger = logging.getLogger("mlx_vector_db.config")
 

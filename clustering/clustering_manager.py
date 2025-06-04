@@ -1,31 +1,19 @@
-# Neue Datei: clustering/cluster_manager.py
-# Implementiert Clustering-Support für High Availability.
-
-# MLX Specificity: Das Clustering selbst ist eher eine Infrastrukturkomponente.
-#                  Die zu verteilenden/replizierenden Daten sind jedoch MLX-Vektoren.
-#                  Ein Cluster kann helfen, MLX-Berechnungen (z.B. Index-Sharding,
-#                  verteilte Queries in Zukunft) auf mehrere Apple Silicon Nodes zu verteilen.
-# LLM Anbindung: Für hochverfügbare LLM-Systeme, die auf die Vektor-DB angewiesen sind,
-#                ist ein ausfallsicheres Backend (durch Clustering erreicht) essentiell.
-#                Es ermöglicht auch eine bessere Skalierung bei vielen LLM-Agenten.
-
+# replication/replicator.py UND clustering/clustering_manager.py - Korrigierter Header
 import asyncio
 import json
 import time
 import os
-import uuid # Für Node ID Generierung
-from typing import Dict, List, Optional, Set # Set hinzugefügt
-from dataclasses import dataclass, asdict
+import uuid
+from typing import Dict, List, Optional, Set, Any
+from dataclasses import dataclass, asdict, field
 import logging
 
-# aioredis wird benötigt, muss in requirements.txt hinzugefügt werden
+# aioredis wird benötigt
 try:
     import aioredis
 except ImportError:
     print("Bitte 'aioredis' installieren: pip install aioredis")
-    # Fallback oder Fehler werfen, wenn aioredis nicht verfügbar ist
     aioredis = None
-
 
 logger = logging.getLogger("mlx_vector_db.clustering")
 

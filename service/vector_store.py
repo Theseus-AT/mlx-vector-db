@@ -32,6 +32,9 @@ class VectorStoreConfig:
     cache_size: int = 10000  # number of vectors to keep in memory
     use_metal: bool = True
     jit_compile: bool = True
+    # HNSW support
+    enable_hnsw: bool = False
+    hnsw_config: Optional['HNSWConfig'] = None
 
 
 class MLXVectorStore:
@@ -51,13 +54,31 @@ class MLXVectorStore:
         self._vector_cache = {}
         self._compiled_similarity_fn = None
         
+        # HNSW index
+        self.hnsw_index = None
+        
         # Initialize storage
         self.store_path.mkdir(parents=True, exist_ok=True)
         self._load_store()
         
+        # Initialize HNSW if configured
+        self._init_hnsw_if_needed()
+        
         # Compile similarity functions on first use
         if self.config.jit_compile:
             self._warmup_kernels()
+    
+    def _init_hnsw_if_needed(self):
+        """Initialize HNSW index if configured"""
+        if hasattr(self.config, 'enable_hnsw') and getattr(self.config, 'enable_hnsw', False):
+            try:
+                from performance.hnsw_index import HNSWIndex, HNSWConfig
+                hnsw_config = getattr(self.config, 'hnsw_config', HNSWConfig())
+                self.hnsw_index = HNSWIndex(self.config.dimension, hnsw_config)
+                print("🔍 HNSW index initialized")
+            except ImportError:
+                print("⚠️ HNSW module not available, using flat index")
+                self.hnsw_index = None
     
     def _warmup_kernels(self):
         """Pre-compile MLX kernels for optimal performance"""
@@ -143,6 +164,13 @@ class MLXVectorStore:
             self._metadata.extend(metadata)
             self._vector_count += len(metadata)
             
+            # Update HNSW index if available
+            if self.hnsw_index:
+                if self.hnsw_index.n_points == 0:
+                    self.hnsw_index.build(self._vectors, show_progress=False)
+                else:
+                    self.hnsw_index.extend_vectors(new_vectors)
+            
             # Save to disk (async-friendly)
             self._save_store()
             
@@ -150,10 +178,11 @@ class MLXVectorStore:
     
     def query(self, query_vector: Union[np.ndarray, List[float]], 
               k: int = 10, 
-              filter_metadata: Optional[Dict] = None) -> List[Tuple[Dict, float]]:
-        """High-performance similarity search"""
+              filter_metadata: Optional[Dict] = None,
+              use_hnsw: Optional[bool] = None) -> Union[List[Tuple[Dict, float]], Tuple[List[int], List[float], List[Dict]]]:
+        """High-performance similarity search - returns (indices, distances, metadata) for API compatibility"""
         if self._vectors is None or self._vector_count == 0:
-            return []
+            return [], [], []
         
         with self.lock:
             # Convert query to MLX array
@@ -162,42 +191,110 @@ class MLXVectorStore:
             else:
                 query_mx = mx.array(np.array(query_vector, dtype=np.float32))
             
-            # Get similarity function
-            similarity_fn = self._get_similarity_fn()
-            
-            # Compute similarities (Metal accelerated)
-            similarities = similarity_fn(query_mx, self._vectors)
-            
-            # Convert to numpy for indexing (this materializes the computation)
-            similarities_np = np.array(similarities)
-            
             # Apply metadata filtering if needed
             valid_indices = self._apply_metadata_filter(filter_metadata)
             
-            if valid_indices is not None:
-                # Mask similarities for filtered results
-                filtered_similarities = similarities_np[valid_indices]
-                filtered_indices = valid_indices
+            # Use HNSW if available and requested
+            if use_hnsw is not False and self.hnsw_index and self.hnsw_index.n_points > 0:
+                indices_mx, distances_mx = self.hnsw_index.search(query_mx, k)
+                indices = indices_mx.tolist()
+                distances = distances_mx.tolist()
             else:
-                filtered_similarities = similarities_np
-                filtered_indices = np.arange(len(similarities_np))
+                # Get similarity function
+                similarity_fn = self._get_similarity_fn()
+                
+                # Compute similarities (Metal accelerated)
+                similarities = similarity_fn(query_mx, self._vectors)
+                
+                # Convert to numpy for indexing
+                similarities_np = np.array(similarities)
+                
+                if valid_indices is not None:
+                    # Mask similarities for filtered results
+                    filtered_similarities = similarities_np[valid_indices]
+                    filtered_indices = valid_indices
+                else:
+                    filtered_similarities = similarities_np
+                    filtered_indices = np.arange(len(similarities_np))
+                
+                # Get top-k indices
+                if len(filtered_similarities) <= k:
+                    top_indices = np.arange(len(filtered_similarities))
+                else:
+                    top_indices = np.argpartition(filtered_similarities, -k)[-k:]
+                    top_indices = top_indices[np.argsort(filtered_similarities[top_indices])[::-1]]
+                
+                indices = [int(filtered_indices[idx]) for idx in top_indices]
+                # Convert similarities to distances
+                if self.config.metric == "cosine":
+                    distances = [float(1.0 - filtered_similarities[idx]) for idx in top_indices]
+                else:
+                    distances = [float(-filtered_similarities[idx]) for idx in top_indices]
             
-            # Get top-k indices
-            if len(filtered_similarities) <= k:
-                top_indices = np.arange(len(filtered_similarities))
+            # Build metadata list
+            metadata_list = [self._metadata[idx] for idx in indices]
+            
+            # Check if we should return new format (for API) or old format (for backward compatibility)
+            # Return new format by default
+            return indices, distances, metadata_list
+    
+    @property
+    def dimension(self) -> int:
+        """Get vector dimension"""
+        return self.config.dimension
+
+    @property
+    def vectors(self) -> Optional[mx.array]:
+        """Get vectors array"""
+        return self._vectors
+
+    @property
+    def metadata(self) -> List[Dict]:
+        """Get metadata list"""
+        return self._metadata
+    
+    def get_metadata(self, index: int) -> Dict:
+        """Get metadata for a specific index"""
+        with self.lock:
+            if 0 <= index < len(self._metadata):
+                return self._metadata[index]
+            return {}
+    
+    def delete_vectors(self, indices: List[int]) -> int:
+        """Delete vectors by indices"""
+        with self.lock:
+            if not indices or self._vectors is None:
+                return 0
+            
+            # Sortiere Indizes absteigend für korrektes Löschen
+            indices_to_delete = sorted(set(indices), reverse=True)
+            deleted_count = 0
+            
+            # Konvertiere zu numpy für einfacheres Löschen
+            vectors_np = np.array(self._vectors)
+            mask = np.ones(len(vectors_np), dtype=bool)
+            
+            for idx in indices_to_delete:
+                if 0 <= idx < len(self._metadata):
+                    mask[idx] = False
+                    deleted_count += 1
+            
+            # Update vectors
+            remaining_vectors = vectors_np[mask]
+            if len(remaining_vectors) > 0:
+                self._vectors = mx.array(remaining_vectors)
+                # Update metadata
+                self._metadata = [meta for i, meta in enumerate(self._metadata) if mask[i]]
             else:
-                top_indices = np.argpartition(filtered_similarities, -k)[-k:]
-                top_indices = top_indices[np.argsort(filtered_similarities[top_indices])[::-1]]
+                self._vectors = None
+                self._metadata = []
             
-            # Build results
-            results = []
-            for idx in top_indices:
-                original_idx = filtered_indices[idx]
-                metadata = self._metadata[original_idx]
-                score = float(filtered_similarities[idx])
-                results.append((metadata, score))
+            self._vector_count -= deleted_count
             
-            return results
+            # Save changes
+            self._save_store()
+            
+            return deleted_count
     
     def _apply_metadata_filter(self, filter_metadata: Optional[Dict]) -> Optional[np.ndarray]:
         """Apply metadata filtering to get valid indices"""
@@ -212,7 +309,7 @@ class MLXVectorStore:
         return np.array(valid_indices) if valid_indices else np.array([])
     
     def batch_query(self, query_vectors: Union[np.ndarray, List[List[float]]], 
-                   k: int = 10) -> List[List[Tuple[Dict, float]]]:
+                   k: int = 10) -> Tuple[List[List[int]], List[List[float]], List[List[Dict]]]:
         """Batch query processing for maximum throughput"""
         if isinstance(query_vectors, list):
             query_vectors = np.array(query_vectors, dtype=np.float32)
@@ -220,12 +317,17 @@ class MLXVectorStore:
         # Convert to MLX
         queries_mx = mx.array(query_vectors)
         
-        results = []
-        for i in range(queries_mx.shape[0]):
-            query_result = self.query(np.array(queries_mx[i]), k=k)
-            results.append(query_result)
+        all_indices = []
+        all_distances = []
+        all_metadata = []
         
-        return results
+        for i in range(queries_mx.shape[0]):
+            indices, distances, metadata = self.query(np.array(queries_mx[i]), k=k)
+            all_indices.append(indices)
+            all_distances.append(distances)
+            all_metadata.append(metadata)
+        
+        return all_indices, all_distances, all_metadata
     
     def _save_store(self):
         """Save vectors and metadata to disk using MLX NPZ format"""
@@ -320,8 +422,9 @@ class MLXVectorStore:
             # Force evaluation of lazy operations
             mx.eval(self._vectors)
             
-            # TODO: Implement HNSW index here
-            # For now, we keep the flat index but ensure it's optimized
+            # Rebuild HNSW index if available
+            if self.hnsw_index and self._vectors is not None:
+                self.hnsw_index.build(self._vectors, show_progress=False)
             
             print("✅ Optimization complete")
     
@@ -331,6 +434,7 @@ class MLXVectorStore:
             self._vectors = None
             self._metadata = []
             self._vector_count = 0
+            self.hnsw_index = None
             
             # Clean up files
             for file_path in self.store_path.glob("*"):

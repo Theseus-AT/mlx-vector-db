@@ -28,14 +28,25 @@ import logging
 import numpy as np
 
 from service.vector_store import MLXVectorStore, VectorStoreConfig
-from service.models import (
-    CreateStoreRequest, ExportRequest, ImportRequest, 
-    ExportResponse, ImportResponse, VectorStoreConfig,
-    ProductionConfig, DevelopmentConfig, BenchmarkConfig,
-    create_error_response, create_success_response
-)
-from core.auth import verify_api_key, verify_admin_key
-from api.vectors import store_manager
+# In admin.py, ändere temporär zu:
+try:
+    from service.models import (
+        CreateStoreRequest,
+        CreateStoreResponse,
+        StoreStatsResponse,
+        OptimizeResponse,
+        ExportRequest,
+        ImportRequest,
+        BackupRequest,
+        RestoreRequest,
+        ErrorResponse
+    )
+    print("All imports successful!")
+except ImportError as e:
+    print(f"Import error: {e}")
+    raise
+from security.auth import verify_api_key, verify_admin_key
+from api.routes.vectors import store_manager
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -122,7 +133,9 @@ async def create_store(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/delete_store")
+# api/routes/admin.py - Ersetze die delete_store Route (ca. Zeile 82)
+
+@router.delete("/store")
 async def delete_store(
     user_id: str,
     model_id: str,
@@ -186,6 +199,30 @@ async def delete_store(
         logger.error(f"Failed to delete store: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# api/routes/admin.py - Füge diese Route nach der delete_store Route ein (ca. Zeile 234)
+
+@router.get("/store/stats")
+async def get_store_stats(
+    user_id: str,
+    model_id: str,
+    api_key: str = Depends(verify_api_key)
+):
+    """Get statistics for a specific store"""
+    try:
+        store = await store_manager.get_store(user_id, model_id)
+        stats = store.get_stats()
+        
+        return {
+            "vectors": stats.get('vector_count', 0),
+            "metadata": len(store._metadata) if hasattr(store, '_metadata') else 0,
+            "dimension": stats.get('dimension', 0),
+            "memory_usage_mb": stats.get('memory_usage_mb', 0.0)
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get store stats: {e}")
+        raise HTTPException(status_code=404, detail=f"Store not found: {user_id}/{model_id}")
 
 @router.get("/list_stores")
 async def list_stores(

@@ -1,15 +1,15 @@
-# performance/mlx_optimized.py
+# performance/mlx_optimized.py - Kompletter korrigierter Header
 """
 MLX compiled operations for maximum performance.
 Optimized for Apple Silicon.
 """
 import mlx.core as mx
-# import numpy as np # NumPy wird hier nicht direkt benötigt
-from typing import Tuple, List # List wird hier nicht direkt benötigt, aber Tuple schon
+from typing import Tuple, List, Dict
 import logging
-# import os # os wird hier nicht direkt benötigt
+import threading
+import time
 
-logger = logging.getLogger("mlx_vector_db.optimized") # Konsistenter Logger-Name
+logger = logging.getLogger("mlx_vector_db.optimized")
 
 # performance/mlx_optimized.py
 """

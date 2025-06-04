@@ -26,12 +26,12 @@ from fastapi.responses import JSONResponse
 import mlx.core as mx
 
 # Import our optimized modules
-from api.vectors import router as vectors_router, store_manager
-from api.admin import router as admin_router
-from api.performance import router as performance_router
-from api.monitoring import router as monitoring_router
-from core.auth import verify_api_key
-from storage.models import ErrorResponse, create_error_response
+from api.routes.vectors import router as vectors_router, store_manager
+from api.routes.admin import router as admin_router
+from api.routes.performance import router as performance_router
+from api.routes.monitoring import router as monitoring_router
+from security.auth import verify_api_key
+from service.models import ErrorResponse, create_error_response
 
 # Configure logging
 logging.basicConfig(
@@ -407,3 +407,36 @@ if __name__ == "__main__":
     else:
         logger.info("🛠️ Starting development server...")
         run_development_server()
+
+# main.py - Füge am Ende der Datei hinzu (nach dem if __name__ == "__main__" Block)
+
+def main():
+    """Main entry point when running as script"""
+    import sys
+    
+    # Check command line arguments
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "production":
+            logger.info("🚀 Starting production server...")
+            run_production_server()
+        elif sys.argv[1] == "development":
+            logger.info("🛠️ Starting development server...")
+            run_development_server()
+        else:
+            print(f"Unknown argument: {sys.argv[1]}")
+            print("Usage: python main.py [production|development]")
+            sys.exit(1)
+    else:
+        # Default to development based on environment
+        env = os.getenv("ENVIRONMENT", "development")
+        
+        if env == "production":
+            logger.info("🚀 Starting production server...")
+            run_production_server()
+        else:
+            logger.info("🛠️ Starting development server...")
+            run_development_server()
+
+# Korrigiere auch den bestehenden if __name__ == "__main__" Block:
+if __name__ == "__main__":
+    main()

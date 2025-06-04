@@ -1,27 +1,22 @@
+# demo.py - Korrigierte Imports am Anfang der Datei
 #!/usr/bin/env python3
 """
 Demo script for MLX Vector Database
 Demonstrates basic functionality and usage patterns using the VectorStore class.
 """
 import numpy as np
-import mlx.core as mx # Wichtig für die Vektor-Erstellung
+import mlx.core as mx
 import time
 from pathlib import Path
-import shutil # Für das Löschen von Verzeichnissen im Cleanup
-import logging # Logging hinzugefügt
+import shutil
+import logging
 
-# Importiere die neue VectorStore Klasse und ihre Konfiguration
-# Passen Sie den Pfad an, falls vector_store.py nicht im Root-Verzeichnis liegt.
-# z.B. from service.vector_store import VectorStore, VectorStoreConfig, HNSWConfig
-try:
-    from service.vector_store import VectorStore, VectorStoreConfig #
-    # HNSWConfig wird über VectorStoreConfig gehandhabt, direkter Import hier nicht zwingend
-    # from hnsw_index import HNSWConfig # Falls Sie HNSWConfig direkt anpassen möchten
-    logger = logging.getLogger("mlx_vector_db.demo")
-except ImportError as e:
-    print(f"Fehler beim Importieren von VectorStore: {e}. Stellen Sie sicher, dass vector_store.py im PYTHONPATH ist.")
-    print("Dieses Demo-Skript benötigt die überarbeitete vector_store.py mit der VectorStore-Klasse.")
-    exit(1)
+# Standardisierte Imports
+from service.vector_store import MLXVectorStore, VectorStoreConfig
+from performance.hnsw_index import HNSWConfig
+
+logger = logging.getLogger("mlx_vector_db.demo")
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 # Globale Konfiguration für die Demo-Stores (kann angepasst werden)
 # Diese Werte würden idealerweise aus Ihrer settings.py stammen für Konsistenz.

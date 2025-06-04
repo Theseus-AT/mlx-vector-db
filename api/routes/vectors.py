@@ -21,9 +21,9 @@ import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 import logging
 
-from core.vector_store import MLXVectorStore, VectorStoreConfig, benchmark_vector_store
-from core.auth import verify_api_key
-from storage.models import VectorQuery, VectorAddRequest, BatchQueryRequest
+from service.vector_store import MLXVectorStore, VectorStoreConfig, benchmark_vector_store
+from security.auth import verify_api_key
+from service.models import VectorQuery, VectorAddRequest, BatchQueryRequest
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/vectors", tags=["vectors"])
@@ -184,6 +184,8 @@ async def add_vectors(
         raise HTTPException(status_code=500, detail=f"Failed to add vectors: {str(e)}")
 
 
+# api/routes/vectors.py - Ersetze die query Funktion (ca. Zeile 190-250)
+
 @router.post("/query", response_model=VectorQueryResponse)  
 async def query_vectors(
     request: VectorQuery,
@@ -213,14 +215,24 @@ async def query_vectors(
             )
         )
         
-        # Format results
+        # Format results - handle new return format (indices, distances, metadata)
         formatted_results = []
-        for metadata, score in results:
-            formatted_results.append({
-                "metadata": metadata,
-                "similarity_score": float(score),
-                "rank": len(formatted_results) + 1
-            })
+        if isinstance(results, tuple) and len(results) == 3:
+            indices, distances, metadata_list = results
+            for i, (idx, dist, meta) in enumerate(zip(indices, distances, metadata_list)):
+                formatted_results.append({
+                    "metadata": meta,
+                    "similarity_score": float(1.0 - dist) if store.config.metric == "cosine" else float(-dist),
+                    "rank": i + 1
+                })
+        else:
+            # Legacy format compatibility
+            for metadata, score in results:
+                formatted_results.append({
+                    "metadata": metadata,
+                    "similarity_score": float(score),
+                    "rank": len(formatted_results) + 1
+                })
         
         query_time = (time.time() - start_time) * 1000
         
@@ -234,7 +246,6 @@ async def query_vectors(
     except Exception as e:
         logger.error(f"Error querying vectors: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
-
 
 @router.post("/batch_query", response_model=BatchQueryResponse)
 async def batch_query_vectors(

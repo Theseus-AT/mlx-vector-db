@@ -14,7 +14,7 @@ import psutil
 import os
 
 from security.auth import verify_api_key
-from api.vectors import store_manager
+from api.routes.vectors import store_manager
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/monitoring", tags=["monitoring"])
