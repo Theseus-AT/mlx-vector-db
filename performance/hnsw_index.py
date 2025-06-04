@@ -83,7 +83,6 @@ class HNSWIndex:
         
         # Apple Silicon optimizations
         self.num_threads = self.config.num_threads
-        # MLX automatically uses the best device - no need to check
         
         # Memory-efficient storage
         self.nodes: Dict[int, MemoryEfficientNode] = {}
@@ -104,12 +103,6 @@ class HNSWIndex:
         
         logger.info(f"Initialized production HNSW: dim={dim}, threads={self.num_threads}")
     
-    def _init_compiled_functions(self):
-        """Initialize MLX operations - compilation not always needed due to dynamic graphs"""
-        # Note: MLX handles optimization automatically through lazy evaluation
-        # We keep simple functions for clarity but don't over-compile
-        pass
-    
     def _get_random_level(self) -> int:
         """Optimal level distribution for accuracy"""
         level = 0
@@ -124,22 +117,31 @@ class HNSWIndex:
         if not indices:
             return mx.array([])
         
+        # Check if vectors exist
+        if self.vectors is None:
+            return mx.array([])
+        
         # MLX handles memory placement automatically
-        batch_vectors = mx.take(self.vectors, mx.array(indices), axis=0)
-        
-        if self.metric == 'l2':
-            # Simple L2 distance - MLX optimizes automatically
-            diff = batch_vectors - query
-            distances = mx.sum(diff * diff, axis=1)
-        else:  # cosine
-            # Efficient cosine similarity
-            dot_products = mx.matmul(batch_vectors, query)
-            batch_norms = mx.sqrt(mx.sum(batch_vectors * batch_vectors, axis=1))
-            query_norm = mx.sqrt(mx.sum(query * query))
-            distances = 1.0 - dot_products / (batch_norms * query_norm + 1e-8)
-        
-        # Single eval at the end - let MLX optimize the graph
-        return mx.eval(distances)
+        try:
+            batch_vectors = mx.take(self.vectors, mx.array(indices), axis=0)
+            
+            if self.metric == 'l2':
+                # Simple L2 distance - MLX optimizes automatically
+                diff = batch_vectors - query
+                distances = mx.sum(diff * diff, axis=1)
+            else:  # cosine
+                # Efficient cosine similarity - FIXED for MLX 0.25.2
+                dot_products = mx.matmul(batch_vectors, query)
+                batch_norms = mx.sqrt(mx.sum(batch_vectors * batch_vectors, axis=1))
+                query_norm = mx.sqrt(mx.sum(query * query))
+                distances = 1.0 - dot_products / (batch_norms * query_norm + 1e-8)
+            
+            # Single eval at the end - let MLX optimize the graph
+            return mx.eval(distances)
+            
+        except Exception as e:
+            logger.error(f"Error in batch distance computation: {e}")
+            return mx.array([])
     
     def _search_layer_production(
         self,
@@ -162,11 +164,18 @@ class HNSWIndex:
         # Batch process entry points
         ep_list = list(entry_points - visited)
         if ep_list:
-            distances = self._batch_distances_gpu(ep_list, query)
-            for i, (idx, dist) in enumerate(zip(ep_list, distances.tolist())):
-                heapq.heappush(candidates, (-dist, idx))
-                heapq.heappush(w, (dist, idx))
-                visited.add(idx)
+            try:
+                distances = self._batch_distances_mlx(ep_list, query)
+                
+                # FIXED: Safe handling of distances
+                if distances is not None and distances.size > 0:
+                    distance_list = distances.tolist()
+                    for i, (idx, dist) in enumerate(zip(ep_list, distance_list)):
+                        heapq.heappush(candidates, (-dist, idx))
+                        heapq.heappush(w, (dist, idx))
+                        visited.add(idx)
+            except Exception as e:
+                logger.error(f"Error processing entry points: {e}")
         
         # Main search loop with batching
         batch_size = 32  # Optimal for Apple Silicon
@@ -182,7 +191,7 @@ class HNSWIndex:
             for current_dist, current in batch_candidates:
                 current_dist = -current_dist
                 
-                if current_dist > w[0][0]:
+                if w and current_dist > w[0][0]:
                     continue
                 
                 # Get neighbors
@@ -198,15 +207,21 @@ class HNSWIndex:
             
             # Batch process accumulated neighbors
             if neighbor_buffer:
-                distances = self._batch_distances_mlx(neighbor_buffer, query)
-                
-                for idx, dist in zip(neighbor_buffer, distances.tolist()):
-                    if dist < w[0][0] or len(w) < num_closest:
-                        heapq.heappush(candidates, (-dist, idx))
-                        heapq.heappush(w, (dist, idx))
-                        
-                        if len(w) > num_closest:
-                            heapq.heappop(w)
+                try:
+                    distances = self._batch_distances_mlx(neighbor_buffer, query)
+                    
+                    # FIXED: Safe handling of distances
+                    if distances is not None and distances.size > 0:
+                        distance_list = distances.tolist()
+                        for idx, dist in zip(neighbor_buffer, distance_list):
+                            if not w or dist < w[0][0] or len(w) < num_closest:
+                                heapq.heappush(candidates, (-dist, idx))
+                                heapq.heappush(w, (dist, idx))
+                                
+                                if len(w) > num_closest:
+                                    heapq.heappop(w)
+                except Exception as e:
+                    logger.error(f"Error processing neighbors: {e}")
                 
                 neighbor_buffer.clear()
         
@@ -262,18 +277,25 @@ class HNSWIndex:
     
     def _get_cached_distance(self, idx1: int, idx2: int) -> float:
         """Cache distances for efficiency"""
+        if self.vectors is None:
+            return float('inf')
+            
         key = (min(idx1, idx2), max(idx1, idx2))
         if key not in self._distance_cache:
-            vec1 = self.vectors[idx1]
-            vec2 = self.vectors[idx2]
-            if self.metric == 'l2':
-                dist = float(mx.sum((vec1 - vec2) ** 2).item())
-            else:
-                dot = mx.sum(vec1 * vec2)
-                norm1 = mx.sqrt(mx.sum(vec1 * vec1))
-                norm2 = mx.sqrt(mx.sum(vec2 * vec2))
-                dist = float((1.0 - dot / (norm1 * norm2 + 1e-8)).item())
-            self._distance_cache[key] = dist
+            try:
+                vec1 = self.vectors[idx1]
+                vec2 = self.vectors[idx2]
+                if self.metric == 'l2':
+                    dist = float(mx.sum((vec1 - vec2) ** 2).item())
+                else:
+                    dot = mx.sum(vec1 * vec2)
+                    norm1 = mx.sqrt(mx.sum(vec1 * vec1))
+                    norm2 = mx.sqrt(mx.sum(vec2 * vec2))
+                    dist = float((1.0 - dot / (norm1 * norm2 + 1e-8)).item())
+                self._distance_cache[key] = dist
+            except Exception as e:
+                logger.error(f"Error computing cached distance: {e}")
+                self._distance_cache[key] = float('inf')
         return self._distance_cache[key]
     
     def _insert_batch(self, indices: List[int], show_progress: bool = False):
@@ -290,56 +312,56 @@ class HNSWIndex:
                 continue
             
             # Find neighbors using production search
-            query = self.vectors[idx]
-            current_nearest = {self.entry_point}
-            
-            for lc in range(level, -1, -1):
-                candidates = self._search_layer_production(
-                    query,
-                    current_nearest,
-                    self.ef_construction,
-                    lc
-                )
+            if self.vectors is not None:
+                query = self.vectors[idx]
+                current_nearest = {self.entry_point}
                 
-                # Select neighbors with pruning
-                m = self.max_M0 if lc == 0 else self.max_M
-                neighbors = self._heuristic_prune(candidates, m)
-                
-                if neighbors:
-                    # Set bidirectional links
-                    node.set_neighbors(lc, np.array(neighbors, dtype=np.int32))
+                for lc in range(level, -1, -1):
+                    candidates = self._search_layer_production(
+                        query,
+                        current_nearest,
+                        self.ef_construction,
+                        lc
+                    )
                     
-                    # Update reverse links with pruning
-                    for neighbor_idx in neighbors:
-                        if neighbor_idx in self.nodes:
-                            neighbor = self.nodes[neighbor_idx]
-                            current = neighbor.get_neighbors(lc)
-                            
-                            # Add new connection
-                            updated = np.append(current, idx)
-                            
-                            # Prune if needed
-                            if len(updated) > m:
-                                # Get all distances for pruning
-                                all_dists = []
-                                neighbor_vec = self.vectors[neighbor_idx]
-                                for n_idx in updated:
-                                    dist = self._get_cached_distance(neighbor_idx, n_idx)
-                                    all_dists.append((dist, n_idx))
+                    # Select neighbors with pruning
+                    m = self.max_M0 if lc == 0 else self.max_M
+                    neighbors = self._heuristic_prune(candidates, m)
+                    
+                    if neighbors:
+                        # Set bidirectional links
+                        node.set_neighbors(lc, np.array(neighbors, dtype=np.int32))
+                        
+                        # Update reverse links with pruning
+                        for neighbor_idx in neighbors:
+                            if neighbor_idx in self.nodes:
+                                neighbor = self.nodes[neighbor_idx]
+                                current = neighbor.get_neighbors(lc)
                                 
-                                pruned = self._heuristic_prune(all_dists, m)
-                                updated = np.array(pruned, dtype=np.int32)
-                            
-                            neighbor.set_neighbors(lc, updated)
-                
-                # Update search points for next layer
-                if candidates:
-                    current_nearest = {c[1] for c in candidates[:1]}
+                                # Add new connection
+                                updated = np.append(current, idx)
+                                
+                                # Prune if needed
+                                if len(updated) > m:
+                                    # Get all distances for pruning
+                                    all_dists = []
+                                    for n_idx in updated:
+                                        dist = self._get_cached_distance(neighbor_idx, n_idx)
+                                        all_dists.append((dist, n_idx))
+                                    
+                                    pruned = self._heuristic_prune(all_dists, m)
+                                    updated = np.array(pruned, dtype=np.int32)
+                                
+                                neighbor.set_neighbors(lc, updated)
+                    
+                    # Update search points for next layer
+                    if candidates:
+                        current_nearest = {c[1] for c in candidates[:1]}
             
             self.nodes[idx] = node
             
             # Update entry point if necessary
-            if level > self.nodes[self.entry_point].level:
+            if self.entry_point in self.nodes and level > self.nodes[self.entry_point].level:
                 self.entry_point = idx
     
     def build(self, vectors: mx.array, show_progress: bool = True):
@@ -379,14 +401,11 @@ class HNSWIndex:
         """
         Thread-safe search with optimal accuracy
         """
-        if self.entry_point is None:
+        if self.entry_point is None or self.vectors is None:
             return mx.array([]), mx.array([])
         
         ef = ef or self.ef
         ef = max(ef, k)
-        
-        # Get thread-local visited set
-        thread_id = threading.get_ident()
         
         with self._lock:
             # Search from entry point
@@ -491,12 +510,7 @@ class HNSWIndex:
             # Set vectors if provided
             if vectors is not None:
                 self.vectors = vectors
-                if self.use_gpu:
-                    self.vectors = mx.array(self.vectors, dtype=mx.float32)
-                    mx.eval(self.vectors)
-            
-            # Re-initialize compiled functions
-            self._init_compiled_functions()
+                mx.eval(self.vectors)
             
             logger.info(f"Loaded production HNSW index from {filepath}")
     

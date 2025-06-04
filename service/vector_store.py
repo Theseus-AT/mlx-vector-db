@@ -64,8 +64,8 @@ class MLXVectorStore:
         # Initialize HNSW if configured
         self._init_hnsw_if_needed()
         
-        # Compile similarity functions on first use
-        if self.config.jit_compile:
+        # Compile similarity functions on first use - SAFE VERSION
+        if self.config.jit_compile and self._vector_count > 0:
             self._warmup_kernels()
     
     def _init_hnsw_if_needed(self):
@@ -84,37 +84,42 @@ class MLXVectorStore:
         """Pre-compile MLX kernels for optimal performance"""
         print("🔥 Warming up MLX kernels...")
         
-        # Create dummy data for compilation
-        dummy_vectors = mx.random.normal((100, self.config.dimension))
-        dummy_query = mx.random.normal((self.config.dimension,))
-        
-        # Trigger compilation by running operations
-        if self.config.metric == "cosine":
-            self._cosine_similarity_batch(dummy_query, dummy_vectors)
-        elif self.config.metric == "euclidean":
-            self._euclidean_distance_batch(dummy_query, dummy_vectors)
-        
-        # Force evaluation to complete compilation
-        mx.eval(dummy_vectors)
-        print("✅ MLX kernels ready")
+        try:
+            # Create dummy data for compilation
+            dummy_vectors = mx.random.normal((10, self.config.dimension))
+            dummy_query = mx.random.normal((self.config.dimension,))
+            
+            # Force evaluation first
+            mx.eval(dummy_vectors, dummy_query)
+            
+            # Test similarity functions
+            similarity_fn = self._get_similarity_fn()
+            result = similarity_fn(dummy_query, dummy_vectors)
+            mx.eval(result)
+            
+            print("✅ MLX kernels ready")
+            
+        except Exception as e:
+            print(f"⚠️ Kernel warmup failed: {e}")
+            print("   Continuing without warmup...")
     
     @mx.compile  # JIT compile for performance
     def _cosine_similarity_batch(self, query: mx.array, vectors: mx.array) -> mx.array:
-        """Optimized batch cosine similarity using MLX"""
+        """Optimized batch cosine similarity using MLX 0.25.2"""
         # Normalize query vector (lazy evaluation)
         query_norm = query / mx.linalg.norm(query)
         
         # Normalize all vectors at once (vectorized)
         vectors_norm = vectors / mx.linalg.norm(vectors, axis=1, keepdims=True)
         
-        # Batch dot product (Metal accelerated)
-        similarities = mx.dot(vectors_norm, query_norm)
+        # Batch matrix multiplication (Metal accelerated) - FIXED for MLX 0.25.2
+        similarities = mx.matmul(vectors_norm, query_norm)
         
         return similarities
     
     @mx.compile
     def _euclidean_distance_batch(self, query: mx.array, vectors: mx.array) -> mx.array:
-        """Optimized batch euclidean distance using MLX"""
+        """Optimized batch euclidean distance using MLX 0.25.2"""
         # Broadcasting subtraction
         diff = vectors - query[None, :]  # Shape: (n_vectors, dim)
         
@@ -126,8 +131,9 @@ class MLXVectorStore:
     
     @mx.compile  
     def _dot_product_batch(self, query: mx.array, vectors: mx.array) -> mx.array:
-        """Optimized batch dot product using MLX"""
-        return mx.dot(vectors, query)
+        """Optimized batch dot product using MLX 0.25.2"""
+        # FIXED for MLX 0.25.2
+        return mx.matmul(vectors, query)
     
     def _get_similarity_fn(self):
         """Get the compiled similarity function"""
@@ -179,8 +185,8 @@ class MLXVectorStore:
     def query(self, query_vector: Union[np.ndarray, List[float]], 
               k: int = 10, 
               filter_metadata: Optional[Dict] = None,
-              use_hnsw: Optional[bool] = None) -> Union[List[Tuple[Dict, float]], Tuple[List[int], List[float], List[Dict]]]:
-        """High-performance similarity search - returns (indices, distances, metadata) for API compatibility"""
+              use_hnsw: Optional[bool] = None) -> Tuple[List[int], List[float], List[Dict]]:
+        """High-performance similarity search - returns (indices, distances, metadata)"""
         if self._vectors is None or self._vector_count == 0:
             return [], [], []
         
@@ -206,8 +212,8 @@ class MLXVectorStore:
                 # Compute similarities (Metal accelerated)
                 similarities = similarity_fn(query_mx, self._vectors)
                 
-                # Convert to numpy for indexing
-                similarities_np = np.array(similarities)
+                # Convert to numpy for indexing - FIXED for MLX 0.25.2
+                similarities_np = np.array(similarities.tolist())
                 
                 if valid_indices is not None:
                     # Mask similarities for filtered results
@@ -224,7 +230,9 @@ class MLXVectorStore:
                     top_indices = np.argpartition(filtered_similarities, -k)[-k:]
                     top_indices = top_indices[np.argsort(filtered_similarities[top_indices])[::-1]]
                 
+                # Build result indices and distances - FIXED
                 indices = [int(filtered_indices[idx]) for idx in top_indices]
+                
                 # Convert similarities to distances
                 if self.config.metric == "cosine":
                     distances = [float(1.0 - filtered_similarities[idx]) for idx in top_indices]
@@ -234,8 +242,7 @@ class MLXVectorStore:
             # Build metadata list
             metadata_list = [self._metadata[idx] for idx in indices]
             
-            # Check if we should return new format (for API) or old format (for backward compatibility)
-            # Return new format by default
+            # Return consistent format
             return indices, distances, metadata_list
     
     @property
@@ -270,8 +277,8 @@ class MLXVectorStore:
             indices_to_delete = sorted(set(indices), reverse=True)
             deleted_count = 0
             
-            # Konvertiere zu numpy für einfacheres Löschen
-            vectors_np = np.array(self._vectors)
+            # Konvertiere zu numpy für einfacheres Löschen - FIXED
+            vectors_np = np.array(self._vectors.tolist())
             mask = np.ones(len(vectors_np), dtype=bool)
             
             for idx in indices_to_delete:
@@ -322,7 +329,9 @@ class MLXVectorStore:
         all_metadata = []
         
         for i in range(queries_mx.shape[0]):
-            indices, distances, metadata = self.query(np.array(queries_mx[i]), k=k)
+            # FIXED: Convert MLX slice to numpy for query
+            query_np = np.array(queries_mx[i].tolist())
+            indices, distances, metadata = self.query(query_np, k=k)
             all_indices.append(indices)
             all_distances.append(distances)
             all_metadata.append(metadata)
