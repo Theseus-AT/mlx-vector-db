@@ -12,8 +12,8 @@ from typing import List, Tuple
 import json
 
 # Import the implementations
-from vector_store import VectorStore, VectorStoreConfig
-from indexing.hnsw_index import HNSWConfig
+from service.vector_store import VectorStore, VectorStoreConfig
+from performance.hnsw_index import HNSWConfig
 
 class PerformanceTester:
     def __init__(self):

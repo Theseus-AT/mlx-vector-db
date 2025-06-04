@@ -10,7 +10,7 @@ python-dotenv>=1.0.0
 # ML & Computation - Updated to latest MLX versions
 mlx>=0.25.2
 numpy>=1.26.0
-
+matplotlib>=3.9.0
 # Utilities
 filelock>=3.13.0
 requests>=2.31.0

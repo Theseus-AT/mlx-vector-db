@@ -14,7 +14,7 @@ from dataclasses import dataclass
 import logging
 
 # Import HNSW implementation
-from indexing.hnsw_index import HNSWIndex, HNSWConfig
+from performance.hnsw_index import HNSWIndex, HNSWConfig
 
 logger = logging.getLogger(__name__)
 

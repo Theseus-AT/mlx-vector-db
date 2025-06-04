@@ -10,9 +10,14 @@ from typing import Optional, Dict, Any
 from pathlib import Path
 import mlx.core as mx
 
-from auth import get_api_key
-from vector_store import VectorStore, VectorStoreConfig
-from indexing.hnsw_index import HNSWConfig
+from security.auth import (
+    verify_admin_api_key, 
+    validate_safe_identifier,
+    validate_file_upload,
+    get_client_identifier
+)
+from service.vector_store import VectorStore, VectorStoreConfig
+from performance.hnsw_index import HNSWConfig
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
