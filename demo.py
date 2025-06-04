@@ -1,179 +1,262 @@
 #!/usr/bin/env python3
 """
 Demo script for MLX Vector Database
-Demonstrates basic functionality and usage patterns.
+Demonstrates basic functionality and usage patterns using the VectorStore class.
 """
 import numpy as np
+import mlx.core as mx # Wichtig für die Vektor-Erstellung
 import time
-from service.vector_store import (
-    create_store, add_vectors, query_vectors,
-    delete_vectors, delete_store, store_exists,
-    count_vectors, list_users, list_models,
-    batch_query, stream_query, bulk_delete
+from pathlib import Path
+import shutil # Für das Löschen von Verzeichnissen im Cleanup
+import logging # Logging hinzugefügt
+
+# Importiere die neue VectorStore Klasse und ihre Konfiguration
+# Passen Sie den Pfad an, falls vector_store.py nicht im Root-Verzeichnis liegt.
+# z.B. from service.vector_store import VectorStore, VectorStoreConfig, HNSWConfig
+try:
+    from service.vector_store import VectorStore, VectorStoreConfig #
+    # HNSWConfig wird über VectorStoreConfig gehandhabt, direkter Import hier nicht zwingend
+    # from hnsw_index import HNSWConfig # Falls Sie HNSWConfig direkt anpassen möchten
+    logger = logging.getLogger("mlx_vector_db.demo")
+except ImportError as e:
+    print(f"Fehler beim Importieren von VectorStore: {e}. Stellen Sie sicher, dass vector_store.py im PYTHONPATH ist.")
+    print("Dieses Demo-Skript benötigt die überarbeitete vector_store.py mit der VectorStore-Klasse.")
+    exit(1)
+
+# Globale Konfiguration für die Demo-Stores (kann angepasst werden)
+# Diese Werte würden idealerweise aus Ihrer settings.py stammen für Konsistenz.
+DEMO_BASE_PATH = Path("~/.mlx_vector_db_demo_stores").expanduser()
+DEMO_BASE_PATH.mkdir(parents=True, exist_ok=True)
+
+# Standard HNSW-Konfiguration für die Demos (aus Ihrer hnsw_index.py)
+# In VectorStoreConfig wird jetzt eine HNSWConfig erwartet oder über Parameter erstellt.
+# Wir erstellen eine VectorStoreConfig, die intern eine HNSWConfig initialisiert.
+demo_vs_config = VectorStoreConfig(
+    enable_hnsw=True,
+    auto_index_threshold=50, # Kleinere Schwelle für Demos, damit Index schneller gebaut wird
+    hnsw_m=16, # Beispielwerte
+    hnsw_ef_construction=100,
+    hnsw_ef_search=50,
+    hnsw_metric='l2',
+    cache_enabled=True, # Query-Cache in VectorStore aktivieren
+    query_cache_max_size=100
 )
 
+def get_demo_store(user_id: str, model_id: str) -> VectorStore:
+    """Hilfsfunktion zum Erstellen/Abrufen einer VectorStore-Instanz für Demos."""
+    store_path = DEMO_BASE_PATH / f"user_{user_id}" / model_id
+    # `VectorStore` __init__ erstellt das Verzeichnis, falls nicht vorhanden.
+    return VectorStore(store_path, config=demo_vs_config)
+
+def cleanup_store(store: VectorStore):
+    """Bereinigt einen Store und löscht sein Verzeichnis."""
+    store_path_to_delete = store.store_path
+    try:
+        store.clear() # Leert die Inhalte des Stores (Dateien etc.)
+        if store_path_to_delete.exists() and store_path_to_delete.is_dir():
+            shutil.rmtree(store_path_to_delete) # Löscht das Verzeichnis selbst
+        print(f"🧹 Store-Verzeichnis {store_path_to_delete} bereinigt.")
+    except Exception as e:
+        print(f"Fehler beim Bereinigen von {store_path_to_delete}: {e}")
+
+
 def run_basic_demo():
-    """Run basic vector database operations demo."""
-    print("🧠 MLX Vector Database Demo")
+    """Führt grundlegende Operationen mit der VectorStore-Klasse vor."""
+    print("🧠 MLX Vector Database Demo (mit VectorStore Klasse)")
     print("=" * 50)
     
-    user_id = "demo_user"
-    model = "mistral"
+    user_id = "demo_user_v2"
+    model_id = "mistral_v2"
+    store = get_demo_store(user_id, model_id)
 
-    # 1. Create the store
-    print(f"📁 Creating store for {user_id}/{model}")
-    create_store(user_id, model)
-    if store_exists(user_id, model):
-        print(f"✅ Store created successfully")
+    # 1. Store-Erstellung (implizit durch Instanziierung)
+    print(f"📁 Store wird initialisiert/geladen für {user_id}/{model_id} unter {store.store_path}")
+    if store.store_path.exists(): # Einfacher Check
+        print(f"✅ Store-Verzeichnis existiert.")
 
-    # 2. Add vectors
-    print(f"➕ Adding sample vectors...")
-    vecs = np.random.rand(5, 384).astype(np.float32)
-    meta = [{"id": f"chunk_{i}", "source": "demo", "content": f"Sample content {i}"} for i in range(5)]
+    # 2. Vektoren hinzufügen
+    print(f"➕ Füge Beispiel-Vektoren hinzu...")
+    # Konvertiere NumPy-Arrays zu mx.array für die Übergabe an VectorStore
+    vecs_np = np.random.rand(5, store.dimension or 384).astype(np.float32) # Dimension aus Store oder Default
+    vecs_mx = mx.array(vecs_np)
+    meta = [{"id": f"chunk_{i}", "source": "demo", "content": f"Sample content {i}"} for i in range(vecs_mx.shape[0])]
     
     start_time = time.time()
-    add_vectors(user_id, model, vecs, meta)
+    store.add_vectors(vecs_mx, meta)
     add_time = time.time() - start_time
-    print(f"   Added 5 vectors in {add_time:.3f}s")
+    print(f"   {vecs_mx.shape[0]} Vektoren hinzugefügt in {add_time:.3f}s")
 
-    # 3. Query vectors
-    print(f"🔍 Querying vectors...")
-    qvec = vecs[0]
+    # 3. Vektoren abfragen
+    print(f"🔍 Frage Vektoren ab...")
+    query_vec_mx = vecs_mx[0] # Verwende den ersten hinzugefügten Vektor als Query
+    k_val = 3
+    
     start_time = time.time()
-    results = query_vectors(user_id, model, qvec, k=3)
+    # Die query-Methode der neuen VectorStore-Klasse gibt (indices, distances, metadata) zurück
+    indices, distances, result_metadata = store.query(query_vec_mx, k=k_val)
     query_time = time.time() - start_time
     
-    print(f"   Query completed in {query_time:.3f}s")
-    print(f"   Found {len(results)} results:")
-    for i, res in enumerate(results):
-        print(f"     {i+1}. ID: {res.get('id')}, Score: {res.get('similarity_score', 0):.4f}")
+    print(f"   Query abgeschlossen in {query_time:.3f}s")
+    print(f"   {len(indices)} Ergebnisse gefunden für k={k_val}:")
+    for i in range(len(indices)):
+        print(f"     {i+1}. Index: {indices[i]}, Distanz: {distances[i]:.4f}, Meta-ID: {result_metadata[i].get('id')}")
 
-    # 4. Batch query demo
-    print(f"🧠 Testing batch query...")
+    # 4. Batch-Query-Demo
+    print(f"🧠 Teste Batch-Query...")
+    batch_query_vecs_mx = vecs_mx[:3] # Nimm die ersten 3 Vektoren
+    k_batch = 2
+    
     start_time = time.time()
-    batch_results = batch_query(user_id, model, vecs[:3], k=2)
+    # store.batch_query gibt Tuple(List[List[indices]], List[List[distances]], List[List[metadata]])
+    all_indices, all_distances, all_meta = store.batch_query(batch_query_vecs_mx, k=k_batch)
     batch_time = time.time() - start_time
-    print(f"   Batch query (3 queries) completed in {batch_time:.3f}s")
+    print(f"   Batch-Query ({batch_query_vecs_mx.shape[0]} Queries) abgeschlossen in {batch_time:.3f}s")
+    for i in range(len(all_indices)):
+        print(f"     Ergebnisse für Query {i+1}: {len(all_indices[i])} Treffer")
+
+
+    # 5. Store-Statistiken
+    print(f"📊 Store-Statistiken:")
+    stats = store.get_stats() # Verwendet die get_stats Methode von VectorStore
+    print(f"   Vektoren: {stats.get('total_vectors', 0)}")
+    print(f"   Metadaten: {stats.get('metadata_count', 0)}")
+    print(f"   Dimension: {stats.get('vector_dimension', 'N/A')}")
+    print(f"   HNSW aktiv: {stats.get('hnsw_index_active', False)}")
+
+    # 6. Vektoren löschen (basierend auf Indizes)
+    # Um dies analog zur alten Demo zu machen (Löschen nach Metadaten-ID),
+    # müssten wir zuerst die Indizes der zu löschenden Vektoren finden.
+    print(f"🗑️ Lösche Vektor mit id 'chunk_1'...")
+    idx_to_delete = -1
+    for i, m in enumerate(store.metadata):
+        if m.get("id") == "chunk_1":
+            idx_to_delete = i
+            break
     
-    # 5. Store statistics
-    print(f"📊 Store statistics:")
-    stats = count_vectors(user_id, model)
-    print(f"   Vectors: {stats['vectors']}, Metadata: {stats['metadata']}")
+    if idx_to_delete != -1:
+        deleted_count = store.delete_vectors([idx_to_delete]) # delete_vectors erwartet eine Liste von Indizes
+        print(f"   {deleted_count} Vektor(en) gelöscht.")
+    else:
+        print(f"   Vektor mit id 'chunk_1' nicht gefunden.")
 
-    # 6. Delete specific vector
-    print(f"🗑️ Deleting vector with id 'chunk_1'...")
-    deleted = delete_vectors(user_id, model, {"id": "chunk_1"})
-    print(f"   Deleted {deleted} vector(s)")
+    # 7. Finale Statistiken
+    final_stats = store.get_stats()
+    print(f"📊 Finale Statistiken:")
+    print(f"   Vektoren: {final_stats.get('total_vectors', 0)}")
 
-    # 7. Final stats
-    final_stats = count_vectors(user_id, model)
-    print(f"📊 Final statistics:")
-    print(f"   Vectors: {final_stats['vectors']}, Metadata: {final_stats['metadata']}")
+    # 8. Aufräumen
+    cleanup_store(store)
+    print(f"✅ Basis-Demo (V2) erfolgreich abgeschlossen!")
 
-    # 8. Cleanup
-    print(f"🧹 Cleaning up...")
-    delete_store(user_id, model)
-    print(f"✅ Demo completed successfully!")
 
-def run_performance_demo():
-    """Run performance demonstration with larger datasets."""
-    print("\n🚀 Performance Demo")
+def run_performance_demo_local(): # Umbenannt, um Konflikt mit API-Demo zu vermeiden
+    """Führt eine Performance-Demonstration mit größeren Datensätzen direkt mit VectorStore durch."""
+    print("\n🚀 Performance Demo (Lokal mit VectorStore Klasse)")
     print("=" * 50)
     
-    user_id = "perf_user"
-    model = "performance_test"
-    
-    # Create store
-    create_store(user_id, model)
-    
-    # Test with larger dataset
-    sizes = [100, 500, 1000]
-    
+    user_id = "perf_user_v2"
+    model_id = "performance_test_v2"
+    store = get_demo_store(user_id, model_id)
+
+    sizes = [100, 500, 1000] # Kleinere Größen für schnellere Demo hier
+    dim = store.dimension or 384
+
     for size in sizes:
-        print(f"\n📈 Testing with {size} vectors...")
+        print(f"\n📈 Teste mit {size} Vektoren (Dim: {dim})...")
         
-        # Generate random vectors
-        vecs = np.random.rand(size, 384).astype(np.float32)
-        meta = [{"id": f"vec_{i}", "batch": "perf_test"} for i in range(size)]
+        vecs_mx = mx.random.normal((size, dim), dtype=mx.float32)
+        meta = [{"id": f"vec_{i}", "batch": "perf_test_v2"} for i in range(size)]
         
-        # Measure add time
-        start_time = time.time()
-        add_vectors(user_id, model, vecs, meta)
-        add_time = time.time() - start_time
+        start_time = time.perf_counter()
+        store.add_vectors(vecs_mx, meta)
+        mx.block_until_ready() # Wichtig für genaue Zeitmessung von MLX-Operationen
+        add_time = time.perf_counter() - start_time
         
-        # Measure query time
-        query_vec = np.random.rand(384).astype(np.float32)
-        start_time = time.time()
-        results = query_vectors(user_id, model, query_vec, k=10)
-        query_time = time.time() - start_time
-        
-        print(f"   Add time: {add_time:.3f}s ({size/add_time:.1f} vectors/s)")
-        print(f"   Query time: {query_time:.3f}s")
-        print(f"   Found {len(results)} results")
-        
-        # Clean up for next iteration
-        bulk_delete(user_id, model, "batch", "perf_test")
-    
-    # Cleanup
-    delete_store(user_id, model)
-    print(f"✅ Performance demo completed!")
+        query_vec_mx = mx.random.normal((dim,), dtype=mx.float32)
+        mx.eval(query_vec_mx) # Stelle sicher, dass Query-Vektor bereit ist
 
-def run_advanced_demo():
-    """Demonstrate advanced features like filtering and streaming."""
-    print("\n🔧 Advanced Features Demo")
+        query_times = []
+        for _ in range(min(30, size // 10 + 1)): # Mache einige Abfragen
+            q_start_time = time.perf_counter()
+            _, _, _ = store.query(query_vec_mx, k=10, use_hnsw=True) # Teste mit HNSW
+            mx.block_until_ready()
+            query_times.append(time.perf_counter() - q_start_time)
+        
+        avg_query_time_ms = (sum(query_times) / len(query_times)) * 1000 if query_times else 0
+        
+        print(f"   Hinzufügen-Zeit: {add_time:.3f}s ({size/add_time if add_time > 0 else float('inf'):.1f} Vektoren/s)")
+        print(f"   Avg. Query-Zeit (HNSW, k=10): {avg_query_time_ms:.3f}ms")
+        
+        # Bereinige nur die Vektoren dieses Batches für den nächsten Durchlauf, wenn gewünscht
+        # Einfacher für Demo: Store komplett neu erstellen oder spezifische Löschfunktion
+        # Für diese Demo: Wir bauen auf dem bestehenden Store auf oder löschen ihn vorher.
+        # Hier wäre store.clear() und erneutes Befüllen sauberer pro `size`.
+        # Für Einfachheit lassen wir es kumulativ oder der User löscht manuell.
+    
+    cleanup_store(store)
+    print(f"✅ Lokale Performance-Demo abgeschlossen!")
+
+
+def run_advanced_demo_local(): # Umbenannt
+    """Demonstriert erweiterte Funktionen wie Metadaten-Filterung direkt mit VectorStore."""
+    print("\n🔧 Erweiterte Features Demo (Lokal mit VectorStore Klasse)")
     print("=" * 50)
     
-    user_id = "advanced_user"
-    model = "advanced_test"
-    
-    create_store(user_id, model)
-    
-    # Add vectors with diverse metadata
-    vecs = np.random.rand(10, 384).astype(np.float32)
+    user_id = "advanced_user_v2"
+    model_id = "advanced_test_v2"
+    store = get_demo_store(user_id, model_id)
+    dim = store.dimension or 128 # Kleinere Dimension für diese Demo
+
+    vecs_mx = mx.random.normal((20, dim), dtype=mx.float32) # Mehr Vektoren für Filtertests
     meta = [
-        {"id": f"doc_{i}", "category": "A" if i < 5 else "B", "priority": i % 3}
-        for i in range(10)
+        {"id": f"doc_{i}", "category": "A" if i < 10 else "B", "priority": i % 3, "lang": "de" if i % 2 == 0 else "en"}
+        for i in range(vecs_mx.shape[0])
     ]
+    store.add_vectors(vecs_mx, meta)
+
+    print(f"🔍 Teste Metadaten-Filterung...")
+    query_mx_adv = vecs_mx[0]
+
+    # Filter nach Kategorie 'A'
+    _, _, cat_a_results_meta = store.query(query_mx_adv, k=10, metadata_filter={"category": "A"})
+    print(f"   Ergebnisse für Kategorie 'A': {len(cat_a_results_meta)}")
+    assert all(m["category"] == "A" for m in cat_a_results_meta)
+
+    # Filter nach Priorität 1 UND Sprache 'en'
+    _, _, prio_lang_results_meta = store.query(query_mx_adv, k=10, metadata_filter={"priority": 1, "lang": "en"})
+    print(f"   Ergebnisse für Priorität 1 & Sprache 'en': {len(prio_lang_results_meta)}")
+    assert all(m["priority"] == 1 and m["lang"] == "en" for m in prio_lang_results_meta)
+
+    # Testfall: Filter, der keine Ergebnisse liefert
+    _, _, no_results_meta = store.query(query_mx_adv, k=10, metadata_filter={"category": "C"})
+    print(f"   Ergebnisse für nicht existente Kategorie 'C': {len(no_results_meta)}")
+    assert len(no_results_meta) == 0
     
-    add_vectors(user_id, model, vecs, meta)
-    
-    # Test metadata filtering
-    print(f"🔍 Testing metadata filtering...")
-    
-    # Filter by category
-    cat_a_results = query_vectors(user_id, model, vecs[0], k=10, filter_metadata={"category": "A"})
-    print(f"   Category A results: {len(cat_a_results)}")
-    
-    # Filter by priority
-    prio_results = query_vectors(user_id, model, vecs[0], k=10, filter_metadata={"priority": 1})
-    print(f"   Priority 1 results: {len(prio_results)}")
-    
-    # Test streaming query
-    print(f"🌊 Testing streaming query...")
-    query_vecs = vecs[:3]
-    stream_count = 0
-    for result in stream_query(user_id, model, query_vecs, k=2):
-        stream_count += 1
-        print(f"   Stream result {stream_count}: {len(result)} items")
-    
-    # Cleanup
-    delete_store(user_id, model)
-    print(f"✅ Advanced demo completed!")
+    # Die `stream_query`-Funktion existiert nicht in der neuen VectorStore-Klasse.
+    # Man könnte sie als Generator implementieren, der `store.query` wiederholt aufruft,
+    # oder `store.batch_query` nutzt und die Ergebnisse yieldet.
+    # Für diese Demo wird sie vorerst entfernt oder als TODO markiert.
+    # print(f"🌊 Streaming Query (nicht direkt in VectorStore, müsste extern implementiert werden)")
+
+    cleanup_store(store)
+    print(f"✅ Erweiterte Demo (V2) abgeschlossen!")
+
 
 def main():
-    """Run all demo functions."""
+    """Führt alle Demo-Funktionen aus."""
+    # Logging für die Demo konfigurieren (optional, falls nicht global schon geschehen)
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
     try:
         run_basic_demo()
-        run_performance_demo()
-        run_advanced_demo()
+        run_performance_demo_local()
+        run_advanced_demo_local()
         
-        print(f"\n🎉 All demos completed successfully!")
-        print(f"📖 Check the API documentation at: http://localhost:8000/docs")
+        print(f"\n🎉 Alle lokalen Demos (V2) erfolgreich abgeschlossen!")
+        print(f"📖 Für API-Tests, starten Sie den Server und verwenden Sie die entsprechenden API-Demo-Skripte.")
         
     except Exception as e:
-        print(f"❌ Demo failed with error: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"❌ Demo fehlgeschlagen: {e}", exc_info=True) # exc_info=True für Stacktrace
 
 if __name__ == "__main__":
     main()

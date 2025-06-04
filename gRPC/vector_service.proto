@@ -1,0 +1,93 @@
+// Neue Datei: grpc/vector_service.proto
+// Definiert den gRPC-Service für die MLX Vector DB.
+
+// MLX Specificity: Die Vektor-Daten (values) werden als 'repeated float' definiert.
+//                  In der Server-Implementierung müssen diese von/zu mx.array konvertiert werden.
+//                  Metadaten bleiben flexibel als map<string, string>.
+// LLM Anbindung: gRPC bietet eine performante Alternative zu REST für die Kommunikation
+//                zwischen Diensten in einer LLM-Pipeline, z.B. zwischen einem
+//                Embedding-Service und der Vektor-DB. Streaming-RPCs (BatchQuery)
+//                können für große Ergebnismengen effizient sein.
+
+syntax = "proto3";
+
+package mlxvectordb; // Eindeutiger Paketname für Ihren Service
+
+// Option für Python-Code-Generierung (optional, aber nützlich)
+option go_package = "github.com/Theseus-AT/mlx-vector-db/gen/go/grpc_api;grpc_api"; // Beispiel für Go
+option java_multiple_files = true;
+option java_package = "io.mlxvectordb.grpc";
+option java_outer_classname = "VectorServiceProto";
+
+
+// Der Haupt-Service für Vektoroperationen
+service VectorService {
+    // Fügt Vektoren zu einem bestimmten Store hinzu.
+    rpc AddVectors(AddVectorsRequest) returns (AddVectorsResponse);
+
+    // Fragt die k nächsten Nachbarn für einen einzelnen Query-Vektor ab.
+    rpc Query(QueryRequest) returns (QueryResponse);
+
+    // Fragt die k nächsten Nachbarn für mehrere Query-Vektoren im Batch ab.
+    // Gibt einen Stream von Antworten zurück, eine für jede Query im Request.
+    rpc BatchQuery(BatchQueryRequest) returns (stream QueryResponse); // Wie im Plan vorgeschlagen
+
+    // Weitere RPCs könnten hier hinzugefügt werden, z.B. für Store-Management,
+    // DeleteVectors, CountVectors etc., analog zur REST API.
+    // Für den Anfang konzentrieren wir uns auf die Kernoperationen.
+}
+
+// Nachricht für einen einzelnen Vektor mit Metadaten.
+message Vector {
+    repeated float values = 1; // Die Vektor-Embeddings
+    map<string, string> metadata = 2; // Zugehörige Metadaten (einfache String-Map)
+                                      // Für komplexere Metadaten könnte man google.protobuf.Struct verwenden.
+}
+
+// Anfrage zum Hinzufügen von Vektoren.
+message AddVectorsRequest {
+    string user_id = 1; // Ziel-User-ID
+    string model_id = 2; // Ziel-Model-ID
+    repeated Vector vectors = 3; // Liste der hinzuzufügenden Vektoren
+}
+
+// Antwort nach dem Hinzufügen von Vektoren.
+message AddVectorsResponse {
+    bool success = 1; // Gibt an, ob die Operation erfolgreich war
+    uint32 count = 2; // Anzahl der hinzugefügten Vektoren
+    string message = 3; // Optionale Nachricht (z.B. Fehlermeldung)
+}
+
+// Anfrage für eine Ähnlichkeitssuche.
+message QueryRequest {
+    string user_id = 1;
+    string model_id = 2;
+    Vector query_vector = 3; // Der Abfragevektor
+    int32 k = 4; // Anzahl der zurückzugebenden nächsten Nachbarn
+    // Optional: Filter für Metadaten
+    // map<string, string> metadata_filter = 5; // Einfacher Filter
+    // Für komplexere Filter könnte eine eigene Nachrichtenstruktur definiert werden.
+}
+
+// Ergebnis-Nachricht für die Ähnlichkeitssuche (einzelner Treffer).
+message QueryResultItem {
+    string id = 1; // ID des gefundenen Vektors (falls in Metadaten vorhanden)
+    float distance = 2; // Distanz zum Query-Vektor (oder Ähnlichkeitsscore)
+    map<string, string> metadata = 3; // Metadaten des gefundenen Vektors
+    // Vector original_vector = 4; // Optional: den Vektor selbst zurückgeben
+}
+
+// Antwort auf eine QueryRequest oder eine einzelne Antwort im BatchQuery-Stream.
+message QueryResponse {
+    repeated QueryResultItem results = 1; // Liste der gefundenen Items
+    string query_id = 2; // Optionale ID zur Zuordnung der Antwort zur Anfrage (nützlich bei Batch)
+}
+
+// Anfrage für eine Batch-Query.
+message BatchQueryRequest {
+    string user_id = 1;
+    string model_id = 2;
+    repeated Vector query_vectors = 3; // Liste der Abfragevektoren
+    int32 k = 4;
+    // map<string, string> metadata_filter = 5; // Ggf. globaler Filter für alle Queries im Batch
+}

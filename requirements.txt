@@ -27,4 +27,9 @@ pytest-asyncio>=0.21.0
 gunicorn>=21.2.0
 
 # Optional: For advanced monitoring (uncomment if needed)
-# prometheus-client>=0.17.0
+prometheus-client>=0.17.0
+tqdm
+grpcio
+grpcio-tools
+requests
+httpx
