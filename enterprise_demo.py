@@ -8,7 +8,7 @@ import time
 import json
 import os
 from typing import Dict, Any
-from service.vector_store import MLXVectorStore as VectorStore, VectorStoreConfig
+
 
 BASE_URL = "http://localhost:8000"
 

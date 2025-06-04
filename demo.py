@@ -12,7 +12,6 @@ import shutil
 import logging
 
 # Standardisierte Imports
-from service.vector_store import MLXVectorStore, VectorStoreConfig
 from performance.hnsw_index import HNSWConfig
 from service.vector_store import MLXVectorStore as VectorStore, VectorStoreConfig
 
@@ -45,7 +44,7 @@ def get_demo_store(user_id: str, model_id: str) -> VectorStoreConfig:
     """Hilfsfunktion zum Erstellen/Abrufen einer VectorStore-Instanz für Demos."""
     store_path = DEMO_BASE_PATH / f"user_{user_id}" / model_id
     # `VectorStore` __init__ erstellt das Verzeichnis, falls nicht vorhanden.
-    return VectorStoreConfig(store_path, config=demo_vs_config)
+    return VectorStore(store_path, config=demo_vs_config)
 
 def cleanup_store(store: VectorStoreConfig):
     """Bereinigt einen Store und löscht sein Verzeichnis."""

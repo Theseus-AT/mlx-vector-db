@@ -9,10 +9,12 @@ import numpy as np
 import time
 from pathlib import Path
 import matplotlib.pyplot as plt # matplotlib muss installiert sein: pip install matplotlib
-from typing import List, Tuple, Dict # Dict hinzugefügt
+from typing import List, Tuple, Dict, Any# Dict hinzugefügt
 import json
 import logging # Logging hinzugefügt
 import shutil # Für Verzeichnisbereinigung
+from service.vector_store import MLXVectorStore as VectorStore, VectorStoreConfig  
+from performance.hnsw_index import HNSWConfig
 
 logger = logging.getLogger("mlx_vector_db.perf_demo_hnsw")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')

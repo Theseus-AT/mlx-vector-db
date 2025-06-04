@@ -189,7 +189,7 @@ async def delete_store(
         
         logger.info(f"🗑️ Deleted store: {user_id}/{model_id}")
         
-        return create_success_response({
+        content=create_success_response({
             "store_deleted": True,
             "user_id": user_id,
             "model_id": model_id,

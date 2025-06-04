@@ -17,6 +17,7 @@ import logging
 import time
 from contextlib import asynccontextmanager
 from typing import Dict, Any
+import threading
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -162,7 +163,7 @@ async def track_requests(request: Request, call_next):
             content=create_error_response(
                 message="Internal server error",
                 error_code="INTERNAL_ERROR"
-            ).dict()
+            )
         )
 
 
@@ -175,7 +176,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
         content=create_error_response(
             message=exc.detail,
             error_code=f"HTTP_{exc.status_code}"
-        ).dict()
+        )
     )
 
 
@@ -187,7 +188,7 @@ async def value_error_handler(request: Request, exc: ValueError):
         content=create_error_response(
             message=str(exc),
             error_code="VALIDATION_ERROR"
-        ).dict()
+        )
     )
 
 
@@ -200,7 +201,7 @@ async def general_exception_handler(request: Request, exc: Exception):
         content=create_error_response(
             message="An unexpected error occurred",
             error_code="UNEXPECTED_ERROR"
-        ).dict()
+        )
     )
 
 
