@@ -1,6 +1,6 @@
 """
 Security and Authentication for MLX Vector Database
-Simple, robust API key authentication
+Simple, robust API key authentication with JWT support
 
 Focus: Essential security without over-engineering
 """
@@ -8,10 +8,10 @@ Focus: Essential security without over-engineering
 import os
 import secrets
 import hashlib
+import logging
+from typing import Optional, Dict, Any
 from fastapi import HTTPException, Depends, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from typing import Optional
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +96,21 @@ def verify_admin_key(credentials: HTTPAuthorizationCredentials = Security(securi
         detail="Admin privileges required",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+
+# JWT Support (placeholder for future implementation)
+def get_current_user_payload() -> Dict[str, Any]:
+    """
+    Placeholder for JWT token validation
+    Returns user payload from JWT token
+    """
+    # This would be implemented when JWT authentication is needed
+    # For now, return a default payload
+    return {
+        "sub": "default_user",
+        "roles": ["user"],
+        "exp": 9999999999  # Far future expiry
+    }
 
 
 def generate_api_key() -> str:
