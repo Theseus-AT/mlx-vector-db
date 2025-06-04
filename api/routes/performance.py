@@ -16,7 +16,7 @@ import logging
 from service.vector_store import MLXVectorStore, VectorStoreConfig, benchmark_vector_store
 from service.models import BenchmarkRequest, BenchmarkResponse
 from security.auth import verify_api_key
-from api.vectors import store_manager
+from api.routes.vectors import store_manager
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/performance", tags=["performance"])

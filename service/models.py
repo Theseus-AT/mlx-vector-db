@@ -406,6 +406,55 @@ class HealthResponse(BaseModel):
     )
 
 
+class BenchmarkRequest(BaseModel):
+    """Request model for performance benchmarking"""
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "user_id": "benchmark_user",
+            "model_id": "benchmark_model",
+            "num_vectors": 1000,
+            "num_queries": 100
+        }
+    })
+    
+    user_id: str = Field(
+        ...,
+        description="User ID for the benchmark"
+    )
+    model_id: str = Field(
+        ...,
+        description="Model ID for the benchmark"
+    )
+    num_vectors: int = Field(
+        default=1000,
+        ge=1,
+        le=1000000,
+        description="Number of vectors to test with"
+    )
+    num_queries: int = Field(
+        default=100,
+        ge=1,
+        le=10000,
+        description="Number of queries to run"
+    )
+
+
+class BenchmarkResponse(BaseModel):
+    """Response model for performance benchmarking"""
+    benchmark_results: Dict[str, Any] = Field(
+        ...,
+        description="Benchmark results including metrics"
+    )
+    mlx_optimized: bool = Field(
+        default=True,
+        description="Whether MLX optimizations were used"
+    )
+    performance_target: str = Field(
+        default="1000+ QPS",
+        description="Performance target description"
+    )
+
+
 class ErrorResponse(BaseModel):
     """Error response model"""
     error: str = Field(
@@ -467,6 +516,8 @@ __all__ = [
     'BackupResponse',
     'RestoreRequest',
     'RestoreResponse',
+    'BenchmarkRequest',
+    'BenchmarkResponse',
     'validate_vector_dimension',
     'validate_vectors_batch'
 ]

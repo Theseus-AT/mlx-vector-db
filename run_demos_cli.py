@@ -4,6 +4,10 @@
 import argparse
 import sys
 import logging
+from demo import main as run_full_basic_demo
+from performance_demo_api import run_performance_demo as run_api_performance_demo
+from enterprise_demo import main as run_enterprise_demo
+from performance_demo_hnsw import main as run_hnsw_performance_tests
 
 # Konfiguriere ein einfaches Logging für das CLI-Tool selbst
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -12,7 +16,7 @@ logger = logging.getLogger("DemoRunner")
 # Importiere die Hauptfunktionen aus Ihren Demo-Dateien
 # Stellen Sie sicher, dass diese Dateien im Python-Pfad sind oder passen Sie die Importe an.
 try:
-    from .demo import main as run_full_basic_demo # Annahme: demo.py hat eine main() Funktion
+    from demo import main as run_full_basic_demo # Annahme: demo.py hat eine main() Funktion
     # oder spezifische Funktionen: from demo import run_basic_demo, run_performance_demo as run_basic_perf_demo, run_advanced_demo
     DEMO_PY_AVAILABLE = True
 except ImportError as e:
@@ -21,7 +25,7 @@ except ImportError as e:
 
 try:
     # Unterscheidung: dies ist die API-basierte Performance-Demo
-    from .performance_demo_api import run_performance_demo as run_api_performance_demo
+    from performance_demo_api import run_performance_demo as run_api_performance_demo
     # Benennen Sie Ihre API-basierte performance_demo.py ggf. um zu performance_demo_api.py,
     # um Konflikte mit der HNSW-spezifischen performance_demo.py zu vermeiden.
     PERFORMANCE_DEMO_API_PY_AVAILABLE = True

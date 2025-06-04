@@ -1,15 +1,4 @@
-"""
-Admin API for MLX Vector Database Store Management
-Optimized for high-performance store operations
-
-Key Features:
-- Multi-store management with isolation
-- ZIP-based backup/restore operations
-- Store optimization and maintenance
-- User/Model store provisioning
-- Performance monitoring per store
-- Bulk operations with MLX acceleration
-"""
+# api/routes/admin.py - Korrekte Reihenfolge:
 
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, UploadFile, File
 from fastapi.responses import FileResponse, StreamingResponse
@@ -28,23 +17,21 @@ import logging
 import numpy as np
 
 from service.vector_store import MLXVectorStore, VectorStoreConfig
-# In admin.py, ändere temporär zu:
-try:
-    from service.models import (
-        CreateStoreRequest,
-        CreateStoreResponse,
-        StoreStatsResponse,
-        OptimizeResponse,
-        ExportRequest,
-        ImportRequest,
-        BackupRequest,
-        RestoreRequest,
-        ErrorResponse
-    )
-    print("All imports successful!")
-except ImportError as e:
-    print(f"Import error: {e}")
-    raise
+from service.models import (
+    CreateStoreRequest,
+    CreateStoreResponse,
+    StoreStatsResponse,
+    OptimizeResponse,
+    ExportRequest,
+    ExportResponse,
+    ImportRequest,
+    ImportResponse,
+    BackupRequest,
+    BackupResponse,
+    RestoreRequest,
+    RestoreResponse,
+    ErrorResponse
+)
 from security.auth import verify_api_key, verify_admin_key
 from api.routes.vectors import store_manager
 
@@ -54,7 +41,23 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 # Admin-specific thread pool for I/O operations
 admin_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="admin")
 
+# HIER - Nach den Imports definieren:
+def create_success_response(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Create a standardized success response"""
+    return {
+        "status": "success",
+        "data": data,
+        "timestamp": time.time()
+    }
 
+def create_error_response(message: str, error_code: str = "ERROR") -> ErrorResponse:
+    """Create a standardized error response"""
+    return ErrorResponse(
+        error=message,
+        code=error_code
+    )
+
+# Dann folgen die anderen Klassen und Routen...
 class StoreInfo(BaseModel):
     """Information about a vector store"""
     user_id: str

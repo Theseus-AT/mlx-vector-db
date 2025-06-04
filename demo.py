@@ -14,6 +14,7 @@ import logging
 # Standardisierte Imports
 from service.vector_store import MLXVectorStore, VectorStoreConfig
 from performance.hnsw_index import HNSWConfig
+from service.vector_store import MLXVectorStore as VectorStore, VectorStoreConfig
 
 logger = logging.getLogger("mlx_vector_db.demo")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -26,24 +27,27 @@ DEMO_BASE_PATH.mkdir(parents=True, exist_ok=True)
 # Standard HNSW-Konfiguration für die Demos (aus Ihrer hnsw_index.py)
 # In VectorStoreConfig wird jetzt eine HNSWConfig erwartet oder über Parameter erstellt.
 # Wir erstellen eine VectorStoreConfig, die intern eine HNSWConfig initialisiert.
+from performance.hnsw_index import HNSWConfig
+
 demo_vs_config = VectorStoreConfig(
+    dimension=384,
+    metric="cosine",
     enable_hnsw=True,
-    auto_index_threshold=50, # Kleinere Schwelle für Demos, damit Index schneller gebaut wird
-    hnsw_m=16, # Beispielwerte
-    hnsw_ef_construction=100,
-    hnsw_ef_search=50,
-    hnsw_metric='l2',
-    cache_enabled=True, # Query-Cache in VectorStore aktivieren
-    query_cache_max_size=100
+    hnsw_config=HNSWConfig(
+        M=16,
+        ef_construction=100,
+        ef_search=50,
+        metric='l2'
+    )
 )
 
-def get_demo_store(user_id: str, model_id: str) -> VectorStore:
+def get_demo_store(user_id: str, model_id: str) -> VectorStoreConfig:
     """Hilfsfunktion zum Erstellen/Abrufen einer VectorStore-Instanz für Demos."""
     store_path = DEMO_BASE_PATH / f"user_{user_id}" / model_id
     # `VectorStore` __init__ erstellt das Verzeichnis, falls nicht vorhanden.
-    return VectorStore(store_path, config=demo_vs_config)
+    return VectorStoreConfig(store_path, config=demo_vs_config)
 
-def cleanup_store(store: VectorStore):
+def cleanup_store(store: VectorStoreConfig):
     """Bereinigt einen Store und löscht sein Verzeichnis."""
     store_path_to_delete = store.store_path
     try:

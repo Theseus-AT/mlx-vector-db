@@ -10,7 +10,9 @@ import numpy as np
 import json
 import os
 import logging # Logging hinzugefügt
-
+# Am Anfang von performance_demo_api.py hinzufügen:
+from typing import Optional
+from service.vector_store import MLXVectorStore as VectorStore, VectorStoreConfig
 logger = logging.getLogger("mlx_vector_db.perf_demo_api")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 

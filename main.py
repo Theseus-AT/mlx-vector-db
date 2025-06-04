@@ -31,7 +31,7 @@ from api.routes.admin import router as admin_router
 from api.routes.performance import router as performance_router
 from api.routes.monitoring import router as monitoring_router
 from security.auth import verify_api_key
-from service.models import ErrorResponse, create_error_response
+from service.models import ErrorResponse
 
 # Configure logging
 logging.basicConfig(
@@ -49,6 +49,14 @@ performance_metrics = {
     "mlx_warmup_time": 0.0
 }
 
+# In main.py, nach den Imports hinzufügen:
+def create_error_response(message: str, error_code: str = "ERROR") -> Dict[str, Any]:
+    """Create a standardized error response"""
+    return {
+        "error": message,
+        "code": error_code,
+        "timestamp": time.time()
+    }
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
