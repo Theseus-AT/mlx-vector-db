@@ -1,364 +1,152 @@
-# api/routes/monitoring.py
 """
-Monitoring, metrics, and health check endpoints
+Monitoring API for MLX Vector Database
+Essential monitoring and health check endpoints
+
+Focus: Core monitoring without complex metrics
 """
-from fastapi import APIRouter, Depends, HTTPException, Response, Query, Request
-from fastapi.responses import PlainTextResponse
-from typing import Dict, Any, Optional
+
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel
+from typing import Dict, Any
 import time
 import logging
+import psutil
+import os
 
-from security.auth import verify_api_key, get_client_identifier
-from monitoring.metrics import (
-    metrics_registry, 
-    health_checker,
-    record_request,
-    record_error
-)
-# In api/routes/vectors.py (Beispielhafte Anpassung)
+from security.auth import verify_api_key
+from api.vectors import store_manager
 
-from fastapi import APIRouter, Depends, HTTPException, status # status hinzugefügt
-# ... andere Importe ...
-from security.auth import get_current_user_payload # Für JWT-Payload
-from security.rbac import require_permission, Permission, Role # Für RBAC
-
-# ... (bestehende Pydantic Modelle) ...
-
-# Beispiel: Anpassung der Route /vectors/query
-@router.post("/query", response_model=QueryResultsResponse)
-@require_permission(Permission.QUERY_VECTORS) # RBAC-Schutz
-async def query_vector_data(
-    request: VectorQueryRequest,
-    current_user_payload: Dict[str, Any] = Depends(get_current_user_payload) # JWT Auth
-):
-    # Multi-Tenancy Check: Sicherstellen, dass der User (aus JWT) auf den angefragten Store zugreifen darf.
-    # Diese Logik hängt davon ab, wie Sie User-Berechtigungen auf Stores verwalten.
-    # Einfaches Beispiel: User darf nur auf Stores mit seiner eigenen User-ID zugreifen.
-    jwt_user_id = current_user_payload.get("sub")
-    if request.user_id != jwt_user_id and Role.ADMIN.value not in current_user_payload.get("roles", []):
-        # Wenn der angeforderte user_id nicht der des Tokens ist UND der User kein Admin ist
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"User {jwt_user_id} is not authorized to access data for user {request.user_id}"
-        )
-
-    # Bestehende Logik zur Vektorabfrage
-    arr = np.array(request.query, dtype=np.float32) # Bleibt, da FastAPI JSON-Listen liefert
-    # Hier könnte eine Konvertierung zu mx.array erfolgen, wenn query_vectors dies erwartet.
-    # query_mx = mx.array(request.query, dtype=mx.float32)
-    
-    results = query_vectors(
-        request.user_id,
-        request.model_id,
-        arr, # oder query_mx
-        k=request.k,
-        filter_metadata=request.filter_metadata
-    )
-    return {"results": results}
-
-logger = logging.getLogger("mlx_vector_db.monitoring")
-
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/monitoring", tags=["monitoring"])
 
-@router.get("/health")
+
+class SystemHealth(BaseModel):
+    """System health response"""
+    status: str
+    mlx_available: bool
+    stores_active: int
+    total_vectors: int
+    memory_usage_mb: float
+    uptime_seconds: float
+
+
+class SystemMetrics(BaseModel):
+    """Basic system metrics"""
+    cpu_percent: float
+    memory_percent: float
+    disk_usage_percent: float
+    process_memory_mb: float
+
+
+@router.get("/health", response_model=SystemHealth)
 async def health_check():
-    """
-    Basic health check endpoint (no auth required)
-    Returns 200 if service is healthy, 503 if unhealthy
-    """
+    """Comprehensive health check"""
     try:
-        health_result = health_checker.run_all_checks()
+        # Test MLX
+        import mlx.core as mx
+        test_array = mx.random.normal((5, 5))
+        mx.eval(test_array)
+        mlx_healthy = True
+    except Exception:
+        mlx_healthy = False
+    
+    # Get store stats
+    store_stats = store_manager.get_stats()
+    
+    return SystemHealth(
+        status="healthy" if mlx_healthy else "degraded",
+        mlx_available=mlx_healthy,
+        stores_active=store_stats.get("total_stores", 0),
+        total_vectors=store_stats.get("total_vectors", 0),
+        memory_usage_mb=store_stats.get("total_memory_mb", 0.0),
+        uptime_seconds=time.time()  # Simplified
+    )
+
+
+@router.get("/metrics", response_model=SystemMetrics)
+async def get_metrics(api_key: str = Depends(verify_api_key)):
+    """Get system metrics"""
+    try:
+        # Get current process
+        process = psutil.Process()
         
-        if health_result["overall_status"] == "unhealthy":
-            return Response(
-                content=f"Service unhealthy: {health_result}",
-                status_code=503,
-                media_type="application/json"
-            )
-        
-        return {
-            "status": health_result["overall_status"],
-            "timestamp": health_result["timestamp"],
-            "service": "mlx-vector-db",
-            "version": "1.0.0"
-        }
+        return SystemMetrics(
+            cpu_percent=psutil.cpu_percent(interval=1),
+            memory_percent=psutil.virtual_memory().percent,
+            disk_usage_percent=psutil.disk_usage('/').percent,
+            process_memory_mb=process.memory_info().rss / (1024 * 1024)
+        )
         
     except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        return Response(
-            content=f"Health check error: {e}",
-            status_code=503,
-            media_type="text/plain"
+        logger.error(f"Metrics collection failed: {e}")
+        return SystemMetrics(
+            cpu_percent=0.0,
+            memory_percent=0.0,
+            disk_usage_percent=0.0,
+            process_memory_mb=0.0
         )
 
-@router.get("/health/detailed")
-async def detailed_health_check(
-    request: Request,
-    api_key: str = Depends(verify_api_key)
-):
-    """
-    Detailed health check with all component status (requires auth)
-    """
-    try:
-        client_id = get_client_identifier(request)
-        logger.info(f"Detailed health check requested by {client_id}")
-        
-        health_result = health_checker.run_all_checks()
-        
-        # Add additional system info
-        import psutil
-        import mlx.core as mx
-        
-        system_info = {
-            "cpu_count": psutil.cpu_count(),
-            "memory_total_gb": psutil.virtual_memory().total / (1024**3),
-            "disk_total_gb": psutil.disk_usage('/').total / (1024**3),
-            "mlx_version": getattr(mx, '__version__', 'unknown'),
-            "python_version": f"{psutil.version_info}",
-        }
-        
-        health_result["system_info"] = system_info
-        
-        return health_result
-        
-    except Exception as e:
-        logger.exception("Detailed health check failed")
-        raise HTTPException(status_code=500, detail=f"Health check failed: {e}")
-
-@router.get("/metrics")
-async def get_metrics(
-    request: Request,
-    format: str = Query("json", regex="^(json|prometheus)$"),
-    api_key: str = Depends(verify_api_key)
-):
-    """
-    Get application metrics in JSON or Prometheus format
-    """
-    try:
-        client_id = get_client_identifier(request)
-        logger.debug(f"Metrics requested by {client_id} in {format} format")
-        
-        if format == "prometheus":
-            prometheus_text = metrics_registry.get_prometheus_format()
-            return PlainTextResponse(
-                content=prometheus_text,
-                media_type="text/plain; version=0.0.4; charset=utf-8"
-            )
-        else:
-            # JSON format
-            metrics_data = metrics_registry.get_all_metrics()
-            
-            # Add metadata
-            return {
-                "metrics": metrics_data,
-                "timestamp": time.time(),
-                "format": "json",
-                "service": "mlx-vector-db"
-            }
-            
-    except Exception as e:
-        logger.exception("Failed to get metrics")
-        raise HTTPException(status_code=500, detail=f"Metrics error: {e}")
-
-@router.get("/metrics/summary")
-async def get_metrics_summary(
-    request: Request,
-    api_key: str = Depends(verify_api_key)
-):
-    """
-    Get high-level metrics summary for dashboards
-    """
-    try:
-        metrics_data = metrics_registry.get_all_metrics()
-        
-        # Extract key metrics for summary
-        summary = {
-            "requests": {
-                "total": metrics_data.get("http_requests_total", {}).get("value", 0),
-                "avg_duration": 0
-            },
-            "vector_operations": {
-                "queries_total": metrics_data.get("vector_queries_total", {}).get("value", 0),
-                "additions_total": metrics_data.get("vector_additions_total", {}).get("value", 0),
-                "avg_query_duration": 0
-            },
-            "cache": {
-                "hits": metrics_data.get("cache_hits_total", {}).get("value", 0),
-                "misses": metrics_data.get("cache_misses_total", {}).get("value", 0),
-                "memory_usage_mb": (metrics_data.get("cache_memory_usage_bytes", {}).get("value", 0) or 0) / (1024**2)
-            },
-            "system": {
-                "cpu_usage_percent": metrics_data.get("system_cpu_usage_percent", {}).get("value", 0),
-                "memory_usage_gb": (metrics_data.get("system_memory_usage_bytes", {}).get("value", 0) or 0) / (1024**3),
-                "disk_usage_gb": (metrics_data.get("system_disk_usage_bytes", {}).get("value", 0) or 0) / (1024**3)
-            },
-            "errors": {
-                "total": metrics_data.get("errors_total", {}).get("value", 0)
-            }
-        }
-        
-        # Calculate derived metrics
-        cache_total = summary["cache"]["hits"] + summary["cache"]["misses"]
-        if cache_total > 0:
-            summary["cache"]["hit_rate_percent"] = (summary["cache"]["hits"] / cache_total) * 100
-        else:
-            summary["cache"]["hit_rate_percent"] = 0
-        
-        # Add histogram statistics if available
-        if "http_request_duration_seconds" in metrics_data:
-            duration_stats = metrics_data["http_request_duration_seconds"].get("stats", {})
-            summary["requests"]["avg_duration"] = duration_stats.get("mean", 0)
-        
-        if "vector_query_duration_seconds" in metrics_data:
-            query_stats = metrics_data["vector_query_duration_seconds"].get("stats", {})
-            summary["vector_operations"]["avg_query_duration"] = query_stats.get("mean", 0)
-        
-        return {
-            "summary": summary,
-            "timestamp": time.time()
-        }
-        
-    except Exception as e:
-        logger.exception("Failed to get metrics summary")
-        raise HTTPException(status_code=500, detail=f"Metrics summary error: {e}")
 
 @router.get("/status")
-async def service_status(
-    request: Request,
-    api_key: str = Depends(verify_api_key)
-):
-    """
-    Get comprehensive service status including performance indicators
-    """
+async def detailed_status(api_key: str = Depends(verify_api_key)):
+    """Detailed system status"""
     try:
-        # Get health status
-        health_result = health_checker.run_all_checks()
+        import mlx.core as mx
+        import platform
         
-        # Get metrics summary
-        metrics_data = metrics_registry.get_all_metrics()
+        # Test MLX device info
+        try:
+            device_info = str(mx.default_device())
+            mlx_working = True
+        except Exception:
+            device_info = "unknown"
+            mlx_working = False
         
-        # Performance indicators
-        performance_indicators = {
-            "response_time_ok": True,
-            "cache_performance_ok": True,
-            "error_rate_ok": True,
-            "resource_usage_ok": True
-        }
-        
-        # Check response time
-        if "http_request_duration_seconds" in metrics_data:
-            stats = metrics_data["http_request_duration_seconds"].get("stats", {})
-            avg_duration = stats.get("mean", 0)
-            if avg_duration > 1.0:  # More than 1 second average
-                performance_indicators["response_time_ok"] = False
-        
-        # Check cache performance
-        cache_hits = metrics_data.get("cache_hits_total", {}).get("value", 0) or 0
-        cache_misses = metrics_data.get("cache_misses_total", {}).get("value", 0) or 0
-        if cache_hits + cache_misses > 100:  # Only check if we have enough samples
-            hit_rate = cache_hits / (cache_hits + cache_misses)
-            if hit_rate < 0.3:  # Less than 30% hit rate
-                performance_indicators["cache_performance_ok"] = False
-        
-        # Check error rate
-        total_requests = metrics_data.get("http_requests_total", {}).get("value", 0) or 0
-        total_errors = metrics_data.get("errors_total", {}).get("value", 0) or 0
-        if total_requests > 100:  # Only check if we have enough samples
-            error_rate = total_errors / total_requests
-            if error_rate > 0.05:  # More than 5% error rate
-                performance_indicators["error_rate_ok"] = False
-        
-        # Check resource usage
-        cpu_usage = metrics_data.get("system_cpu_usage_percent", {}).get("value", 0) or 0
-        memory_usage = metrics_data.get("system_memory_usage_bytes", {}).get("value", 0) or 0
-        total_memory = 8 * 1024**3  # Assume 8GB, could be made dynamic
-        memory_percent = (memory_usage / total_memory) * 100
-        
-        if cpu_usage > 90 or memory_percent > 90:
-            performance_indicators["resource_usage_ok"] = False
-        
-        # Overall status
-        overall_healthy = (
-            health_result["overall_status"] in ["healthy", "warning"] and
-            all(performance_indicators.values())
-        )
+        store_stats = store_manager.get_stats()
         
         return {
-            "service": "mlx-vector-db",
-            "version": "1.0.0",
-            "status": "healthy" if overall_healthy else "degraded",
-            "uptime_seconds": time.time(),  # Simplified uptime
-            "health": health_result,
-            "performance_indicators": performance_indicators,
-            "timestamp": time.time()
+            "system": {
+                "platform": platform.platform(),
+                "processor": platform.processor(),
+                "python_version": platform.python_version()
+            },
+            "mlx": {
+                "available": mlx_working,
+                "device": device_info,
+                "version": "0.25.2"
+            },
+            "stores": store_stats,
+            "environment": os.getenv("ENVIRONMENT", "development")
         }
         
     except Exception as e:
-        logger.exception("Failed to get service status")
-        raise HTTPException(status_code=500, detail=f"Status error: {e}")
+        logger.error(f"Status check failed: {e}")
+        return {"error": str(e)}
 
-@router.post("/alerts/test")
-async def test_alert(
-    request: Request,
-    alert_type: str = Query("test", regex="^(test|high_cpu|low_disk|error_spike)$"),
-    api_key: str = Depends(verify_api_key)
-):
-    """
-    Test alert system (for development/testing)
-    """
-    client_id = get_client_identifier(request)
-    logger.warning(f"Test alert '{alert_type}' triggered by {client_id}")
-    
-    alerts = {
-        "test": "This is a test alert",
-        "high_cpu": "CPU usage above 90%",
-        "low_disk": "Disk space below 10%",
-        "error_spike": "Error rate above 5%"
-    }
-    
-    # Record test error for demonstration
-    record_error("test_alert", "monitoring")
-    
-    return {
-        "alert_type": alert_type,
-        "message": alerts[alert_type],
-        "severity": "warning",
-        "timestamp": time.time(),
-        "triggered_by": client_id
-    }
 
-# Middleware integration for automatic metrics collection
-async def metrics_middleware(request: Request, call_next):
-    """Middleware to automatically collect request metrics"""
-    start_time = time.time()
-    
+@router.get("/stores")
+async def get_store_status(api_key: str = Depends(verify_api_key)):
+    """Get status of all active stores"""
     try:
-        response = await call_next(request)
-        duration = time.time() - start_time
+        stores_status = []
         
-        # Record request metrics
-        record_request(
-            duration=duration,
-            status_code=response.status_code,
-            endpoint=request.url.path
-        )
+        for store_key, store in store_manager._stores.items():
+            user_id, model_id = store_key.split("_", 1)
+            stats = store.get_stats()
+            
+            stores_status.append({
+                "user_id": user_id,
+                "model_id": model_id,
+                "vector_count": stats['vector_count'],
+                "memory_mb": stats['memory_usage_mb'],
+                "dimension": stats['dimension']
+            })
         
-        return response
+        return {
+            "stores": stores_status,
+            "total_stores": len(stores_status)
+        }
         
     except Exception as e:
-        duration = time.time() - start_time
-        
-        # Record error
-        record_error(
-            error_type=type(e).__name__,
-            endpoint=request.url.path
-        )
-        
-        # Still record request (with error status)
-        record_request(
-            duration=duration,
-            status_code=500,
-            endpoint=request.url.path
-        )
-        
-        raise
+        logger.error(f"Store status failed: {e}")
+        return {"error": str(e)}

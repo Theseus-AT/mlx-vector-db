@@ -1,389 +1,668 @@
-# api/routes/admin.py - Secured Version
 """
-Secured Admin routes for MLX Vector Database
+Admin API for MLX Vector Database Store Management
+Optimized for high-performance store operations
+
+Key Features:
+- Multi-store management with isolation
+- ZIP-based backup/restore operations
+- Store optimization and maintenance
+- User/Model store provisioning
+- Performance monitoring per store
+- Bulk operations with MLX acceleration
 """
-from fastapi import UploadFile, File, APIRouter, HTTPException, Query, BackgroundTasks, Depends, Request
-from fastapi.responses import FileResponse
-from pydantic import BaseModel, field_validator, model_validator
-from typing import List, Dict, Optional
-import numpy as np
-import logging
-import os
-import tempfile
-import zipfile
-import shutil
+
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, UploadFile, File
+from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel
+from typing import List, Dict, Optional, Any, Union
+import asyncio
 import json
-# In api/routes/vectors.py (Beispielhafte Anpassung)
+import time
+import zipfile
+import io
+import os
+import shutil
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+import logging
+import numpy as np
 
-from fastapi import APIRouter, Depends, HTTPException, status # status hinzugefügt
-# ... andere Importe ...
-from security.auth import get_current_user_payload # Für JWT-Payload
-from security.rbac import require_permission, Permission, Role # Für RBAC
-
-# ... (bestehende Pydantic Modelle) ...
-
-# Beispiel: Anpassung der Route /vectors/query
-@router.post("/query", response_model=QueryResultsResponse)
-@require_permission(Permission.QUERY_VECTORS) # RBAC-Schutz
-async def query_vector_data(
-    request: VectorQueryRequest,
-    current_user_payload: Dict[str, Any] = Depends(get_current_user_payload) # JWT Auth
-):
-    # Multi-Tenancy Check: Sicherstellen, dass der User (aus JWT) auf den angefragten Store zugreifen darf.
-    # Diese Logik hängt davon ab, wie Sie User-Berechtigungen auf Stores verwalten.
-    # Einfaches Beispiel: User darf nur auf Stores mit seiner eigenen User-ID zugreifen.
-    jwt_user_id = current_user_payload.get("sub")
-    if request.user_id != jwt_user_id and Role.ADMIN.value not in current_user_payload.get("roles", []):
-        # Wenn der angeforderte user_id nicht der des Tokens ist UND der User kein Admin ist
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"User {jwt_user_id} is not authorized to access data for user {request.user_id}"
-        )
-
-    # Bestehende Logik zur Vektorabfrage
-    arr = np.array(request.query, dtype=np.float32) # Bleibt, da FastAPI JSON-Listen liefert
-    # Hier könnte eine Konvertierung zu mx.array erfolgen, wenn query_vectors dies erwartet.
-    # query_mx = mx.array(request.query, dtype=mx.float32)
-    
-    results = query_vectors(
-        request.user_id,
-        request.model_id,
-        arr, # oder query_mx
-        k=request.k,
-        filter_metadata=request.filter_metadata
-    )
-    return {"results": results}
-
-# Security imports
-from security.auth import (
-    verify_admin_api_key, 
-    validate_safe_identifier,
-    validate_file_upload,
-    get_client_identifier
+from service.vector_store import MLXVectorStore, VectorStoreConfig
+from service.models import (
+    CreateStoreRequest, ExportRequest, ImportRequest, 
+    ExportResponse, ImportResponse, VectorStoreConfig,
+    ProductionConfig, DevelopmentConfig, BenchmarkConfig,
+    create_error_response, create_success_response
 )
+from core.auth import verify_api_key, verify_admin_key
+from api.vectors import store_manager
 
-# Service Funktionen importieren
-from service.vector_store import (
-    list_users, list_models, count_vectors, delete_store,
-    create_store, add_vectors, store_exists, get_store_path
-)
-import mlx.core as mx
-
-# Logging Setup
-logger = logging.getLogger("mlx_vector_db.admin")
-
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
 
-# --- Secured Pydantic Models with Validation (Pydantic V2) ---
-from pydantic import field_validator, model_validator
+# Admin-specific thread pool for I/O operations
+admin_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="admin")
 
-class StoreRequest(BaseModel):
+
+class StoreInfo(BaseModel):
+    """Information about a vector store"""
     user_id: str
     model_id: str
-    
-    @field_validator('user_id', 'model_id')
-    @classmethod
-    def validate_identifiers(cls, v: str) -> str:
-        return validate_safe_identifier(v)
+    vector_count: int
+    dimension: int
+    memory_usage_mb: float
+    index_type: str
+    metric: str
+    created_at: Optional[str] = None
+    last_accessed: Optional[str] = None
 
-class AdminAddVectorsRequest(BaseModel):
+
+class BulkStoreOperation(BaseModel):
+    """Bulk operation on multiple stores"""
+    operation: str  # create, delete, optimize, export
+    stores: List[Dict[str, str]]  # [{"user_id": "...", "model_id": "..."}]
+    config: Optional[VectorStoreConfig] = None
+
+
+class StoreMaintenanceRequest(BaseModel):
+    """Store maintenance operations"""
     user_id: str
     model_id: str
-    vectors: List[List[float]]
-    metadata: List[Dict]
-    
-    @field_validator('user_id', 'model_id')
-    @classmethod
-    def validate_identifiers(cls, v: str) -> str:
-        return validate_safe_identifier(v)
-    
-    @field_validator('vectors')
-    @classmethod
-    def validate_vectors(cls, v: List[List[float]]) -> List[List[float]]:
-        if len(v) > 10000:  # Limit batch size
-            raise ValueError("Too many vectors in single request (max 10,000)")
-        return v
-    
-    @model_validator(mode='after')
-    def validate_metadata_count(self) -> 'AdminAddVectorsRequest':
-        if len(self.metadata) != len(self.vectors):
-            raise ValueError("Metadata count must match vector count")
-        return self
+    operations: List[str]  # ["optimize", "compact", "reindex", "cleanup"]
+    force: bool = False
 
-# --- Secured Endpunkte ---
-
-@router.get("/stats")
-async def get_vector_store_stats(
-    request: Request,
-    api_key: str = Depends(verify_admin_api_key)
-):
-    """Aggregierte Übersicht aller User/Model-Stores (Admin only)."""
-    client_id = get_client_identifier(request)
-    logger.info(f"Stats request from {client_id}")
-    
-    results = []
-    try:
-        for user_id in list_users():
-            user_data = {"user_id": user_id, "models": []}
-            for model_id in list_models(user_id):
-                counts = count_vectors(user_id, model_id)
-                user_data["models"].append({
-                    "model_id": model_id,
-                    "vectors": counts.get("vectors", -1),
-                    "metadata": counts.get("metadata", -1)
-                })
-            if user_data["models"]:
-                results.append(user_data)
-        return results
-    except Exception as e:
-        logger.exception("Error retrieving general stats.")
-        raise HTTPException(status_code=500, detail=f"Internal server error retrieving stats: {e}")
-
-@router.get("/store/stats")
-async def get_specific_store_stats(
-    request: Request,
-    user_id: str = Query(...),
-    model_id: str = Query(...),
-    api_key: str = Depends(verify_admin_api_key)
-):
-    """Gibt die Stats für einen spezifischen Store zurück (Admin only)."""
-    # Validate identifiers
-    user_id = validate_safe_identifier(user_id, "user_id")
-    model_id = validate_safe_identifier(model_id, "model_id")
-    
-    client_id = get_client_identifier(request)
-    logger.info(f"Store stats request for {user_id}/{model_id} from {client_id}")
-    
-    if not store_exists(user_id, model_id):
-        raise HTTPException(status_code=404, detail="Store not found.")
-    
-    try:
-        counts = count_vectors(user_id, model_id)
-        return {
-            "user_id": user_id,
-            "model_id": model_id,
-            "vectors": counts.get("vectors", -1),
-            "metadata": counts.get("metadata", -1)
-        }
-    except Exception as e:
-        logger.exception(f"Error getting stats for {user_id}/{model_id}")
-        raise HTTPException(status_code=500, detail=f"Internal server error getting stats: {e}")
-
-@router.delete("/store")
-async def delete_vector_store_endpoint(
-    req: StoreRequest,
-    request: Request,
-    api_key: str = Depends(verify_admin_api_key)
-):
-    """Löscht den gesamten Vektorstore (Admin only)."""
-    client_id = get_client_identifier(request)
-    logger.warning(f"Store deletion request for {req.user_id}/{req.model_id} from {client_id}")
-    
-    if not store_exists(req.user_id, req.model_id):
-        raise HTTPException(status_code=404, detail="Store not found.")
-    
-    try:
-        delete_store(req.user_id, req.model_id)
-        logger.warning(f"Store {req.user_id}/{req.model_id} deleted by {client_id}")
-        return {"status": "deleted", "user_id": req.user_id, "model_id": req.model_id}
-    except Exception as e:
-        logger.exception(f"Failed to delete store via API for {req.user_id}/{req.model_id}")
-        raise HTTPException(status_code=500, detail=f"Internal server error during delete: {str(e)}")
 
 @router.post("/create_store")
-async def create_vector_store_endpoint(
-    req: StoreRequest,
-    request: Request,
-    api_key: str = Depends(verify_admin_api_key)
-):
-    """Erstellt einen neuen Store (Admin only)."""
-    client_id = get_client_identifier(request)
-    logger.info(f"Store creation request for {req.user_id}/{req.model_id} from {client_id}")
-    
-    if store_exists(req.user_id, req.model_id):
-        raise HTTPException(status_code=409, detail="Store already exists.")
-    
-    try:
-        create_store(req.user_id, req.model_id)
-        logger.info(f"Store {req.user_id}/{req.model_id} created by {client_id}")
-        return {"status": "created", "user_id": req.user_id, "model_id": req.model_id}
-    except Exception as e:
-        logger.exception(f"Failed to create store via API for {req.user_id}/{req.model_id}")
-        raise HTTPException(status_code=500, detail=f"Internal server error during create: {str(e)}")
-
-@router.post("/add_test_vectors")
-async def add_test_vectors(
-    req: AdminAddVectorsRequest,
-    request: Request,
-    api_key: str = Depends(verify_admin_api_key)
-):
-    """Fügt Test-Vektoren hinzu (Admin only)."""
-    client_id = get_client_identifier(request)
-    logger.info(f"Adding {len(req.vectors)} test vectors to {req.user_id}/{req.model_id} from {client_id}")
-    
-    if not store_exists(req.user_id, req.model_id):
-        raise HTTPException(status_code=404, detail="Store not found. Create it first.")
-    
-    try:
-        vectors_np = np.array(req.vectors, dtype=np.float32)
-        add_vectors(req.user_id, req.model_id, vectors_np, req.metadata)
-        logger.info(f"Successfully added {len(req.vectors)} test vectors to {req.user_id}/{req.model_id}")
-        return {"status": "vectors added", "user_id": req.user_id, "model_id": req.model_id, "count": len(req.vectors)}
-    except Exception as e:
-        logger.exception(f"Error adding test vectors for {req.user_id}/{req.model_id}")
-        raise HTTPException(status_code=500, detail=f"Internal server error adding vectors: {str(e)}")
-
-@router.get("/export_zip")
-async def export_vector_store_zip(
+async def create_store(
+    request: CreateStoreRequest,
     background_tasks: BackgroundTasks,
-    request: Request,
-    user_id: str = Query(...),
-    model_id: str = Query(...),
-    api_key: str = Depends(verify_admin_api_key)
+    api_key: str = Depends(verify_api_key)
 ):
-    """Exportiert den Store als ZIP-Archiv (Admin only)."""
-    # Validate identifiers
-    user_id = validate_safe_identifier(user_id, "user_id")
-    model_id = validate_safe_identifier(model_id, "model_id")
-    
-    client_id = get_client_identifier(request)
-    logger.info(f"Export request for {user_id}/{model_id} from {client_id}")
-    
-    path = get_store_path(user_id, model_id)
-    vector_file = path / "vectors.npz"
-    metadata_file = path / "metadata.jsonl"
-    
-    if not vector_file.is_file():
-        raise HTTPException(status_code=404, detail="Vector file not found")
-    if not metadata_file.is_file():
-        raise HTTPException(status_code=404, detail="Metadata file not found")
-
-    tmp_zip_path = None
+    """
+    Create a new vector store with specified configuration
+    """
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp_zip_file:
-            tmp_zip_path = tmp_zip_file.name
-            with zipfile.ZipFile(tmp_zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-                zipf.write(vector_file, arcname="vectors.npz")
-                zipf.write(metadata_file, arcname="metadata.jsonl")
-            
-        background_tasks.add_task(os.remove, tmp_zip_path)
+        # Use provided config or defaults
+        config = request.config or VectorStoreConfig()
         
-        logger.info(f"Export completed for {user_id}/{model_id} by {client_id}")
+        # Check if store already exists
+        store_key = store_manager.get_store_key(request.user_id, request.model_id)
+        if store_key in store_manager._stores:
+            raise HTTPException(
+                status_code=409, 
+                detail=f"Store already exists for {request.user_id}/{request.model_id}"
+            )
+        
+        # Create store asynchronously
+        store = await store_manager.get_store(
+            request.user_id, 
+            request.model_id, 
+            config
+        )
+        
+        # Schedule background optimization
+        background_tasks.add_task(
+            optimize_store_background, 
+            request.user_id, 
+            request.model_id
+        )
+        
+        logger.info(f"✅ Created store: {request.user_id}/{request.model_id}")
+        
+        return create_success_response({
+            "store_created": True,
+            "user_id": request.user_id,
+            "model_id": request.model_id,
+            "config": config.dict(),
+            "store_path": str(store.store_path)
+        })
+        
+    except Exception as e:
+        logger.error(f"Failed to create store: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/delete_store")
+async def delete_store(
+    user_id: str,
+    model_id: str,
+    force: bool = False,
+    api_key: str = Depends(verify_admin_key)
+):
+    """
+    Delete a vector store and all its data
+    Requires admin privileges
+    """
+    try:
+        store_key = store_manager.get_store_key(user_id, model_id)
+        
+        if store_key not in store_manager._stores:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Store not found: {user_id}/{model_id}"
+            )
+        
+        store = store_manager._stores[store_key]
+        store_path = store.store_path
+        vector_count = store.get_stats()['vector_count']
+        
+        # Safety check for non-empty stores
+        if vector_count > 0 and not force:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Store contains {vector_count} vectors. Use force=true to delete."
+            )
+        
+        # Clear store data
+        await asyncio.get_event_loop().run_in_executor(
+            admin_executor,
+            store.clear
+        )
+        
+        # Remove from store manager
+        del store_manager._stores[store_key]
+        if store_key in store_manager._configs:
+            del store_manager._configs[store_key]
+        
+        # Remove directory
+        if store_path.exists():
+            await asyncio.get_event_loop().run_in_executor(
+                admin_executor,
+                lambda: shutil.rmtree(store_path, ignore_errors=True)
+            )
+        
+        logger.info(f"🗑️ Deleted store: {user_id}/{model_id}")
+        
+        return create_success_response({
+            "store_deleted": True,
+            "user_id": user_id,
+            "model_id": model_id,
+            "vectors_removed": vector_count
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete store: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/list_stores")
+async def list_stores(
+    user_id: Optional[str] = None,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    List all stores or stores for a specific user
+    """
+    try:
+        stores_info = []
+        
+        for store_key, store in store_manager._stores.items():
+            store_user_id, store_model_id = store_key.split("_", 1)
+            
+            # Filter by user if specified
+            if user_id and store_user_id != user_id:
+                continue
+            
+            stats = store.get_stats()
+            store_info = StoreInfo(
+                user_id=store_user_id,
+                model_id=store_model_id,
+                vector_count=stats['vector_count'],
+                dimension=stats['dimension'],
+                memory_usage_mb=stats['memory_usage_mb'],
+                index_type=stats['index_type'],
+                metric=stats['metric'],
+                # Add timestamps if available
+                created_at=getattr(store, 'created_at', None),
+                last_accessed=getattr(store, 'last_accessed', None)
+            )
+            stores_info.append(store_info)
+        
+        return {
+            "stores": [store.dict() for store in stores_info],
+            "total_stores": len(stores_info),
+            "filtered_by_user": user_id is not None
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to list stores: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/export_zip", response_model=ExportResponse)
+async def export_store_zip(
+    request: ExportRequest,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Export store data as ZIP file
+    Includes vectors, metadata, and configuration
+    """
+    start_time = time.time()
+    
+    try:
+        # Get store
+        store = await store_manager.get_store(request.user_id, request.model_id)
+        
+        if store.get_stats()['vector_count'] == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot export empty store"
+            )
+        
+        # Create export in thread pool
+        export_path = await asyncio.get_event_loop().run_in_executor(
+            admin_executor,
+            _create_store_export,
+            store,
+            request
+        )
+        
+        # Get file size
+        file_size_mb = os.path.getsize(export_path) / (1024 * 1024)
+        export_time = (time.time() - start_time) * 1000
+        
+        logger.info(f"📦 Exported store: {request.user_id}/{request.model_id}")
+        
+        return ExportResponse(
+            success=True,
+            export_path=str(export_path),
+            file_size_mb=file_size_mb,
+            vectors_exported=store.get_stats()['vector_count'],
+            export_time_ms=export_time
+        )
+        
+    except Exception as e:
+        logger.error(f"Export failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/download_export/{user_id}/{model_id}")
+async def download_export(
+    user_id: str,
+    model_id: str,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Download exported store ZIP file
+    """
+    try:
+        export_path = Path(f"./exports/{user_id}_{model_id}_export.zip")
+        
+        if not export_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail="Export file not found. Please export first."
+            )
+        
         return FileResponse(
-            path=tmp_zip_path,
-            filename=f"store_export_{user_id}_{model_id}.zip",
+            path=export_path,
+            filename=f"{user_id}_{model_id}_vectorstore.zip",
             media_type="application/zip"
         )
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.exception(f"Failed to create ZIP export for {user_id}/{model_id}")
-        if tmp_zip_path and os.path.exists(tmp_zip_path):
-            try: os.remove(tmp_zip_path)
-            except OSError: pass
-        raise HTTPException(status_code=500, detail=f"Error creating ZIP export: {str(e)}")
+        logger.error(f"Download failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/import_zip")
-async def import_vector_store_from_zip(
-    request: Request,
-    user_id: str = Query(...),
-    model_id: str = Query(...),
-    overwrite: bool = Query(False),
+
+@router.post("/import_zip", response_model=ImportResponse)
+async def import_store_zip(
+    request: ImportRequest,
     file: UploadFile = File(...),
-    api_key: str = Depends(verify_admin_api_key)
+    api_key: str = Depends(verify_api_key)
 ):
-    """Importiert einen Store aus einer ZIP-Datei (Admin only)."""
-    # Validate identifiers
-    user_id = validate_safe_identifier(user_id, "user_id")
-    model_id = validate_safe_identifier(model_id, "model_id")
+    """
+    Import store data from ZIP file
+    Can overwrite existing stores if specified
+    """
+    start_time = time.time()
     
-    client_id = get_client_identifier(request)
-    logger.info(f"Import request for {user_id}/{model_id} from {client_id}")
-    
-    # Validate file upload
-    file_size = 0
-    if hasattr(file.file, 'seek'):
-        file.file.seek(0, 2)  # Seek to end
-        file_size = file.file.tell()
-        file.file.seek(0)  # Reset to beginning
-    
-    validate_file_upload(file_size, file.content_type or "")
-    
-    with tempfile.TemporaryDirectory() as tmpdir:
-        try:
-            # Save uploaded file
-            zip_path = os.path.join(tmpdir, file.filename or "import.zip")
-            content = await file.read()
-            
-            if not content:
-                raise HTTPException(status_code=400, detail="Uploaded ZIP file is empty.")
-            
-            with open(zip_path, "wb") as f:
-                f.write(content)
-            
-            # Extract and validate ZIP
-            try:
-                with zipfile.ZipFile(zip_path, "r") as zipf:
-                    expected_files = {"vectors.npz", "metadata.jsonl"}
-                    found_files = set(zipf.namelist())
-                    
-                    if not expected_files.issubset(found_files):
-                        missing = expected_files - found_files
-                        raise HTTPException(status_code=400, detail=f"ZIP missing files: {missing}")
-                    
-                    zipf.extractall(tmpdir)
-            except zipfile.BadZipFile:
-                raise HTTPException(status_code=400, detail="Invalid ZIP file format.")
-            
-            # Handle existing store
-            target_store_exists = store_exists(user_id, model_id)
-            if overwrite and target_store_exists:
-                logger.warning(f"Overwriting existing store: {user_id}/{model_id}")
-                delete_store(user_id, model_id)
-                target_store_exists = False
-            elif not overwrite and target_store_exists:
-                raise HTTPException(status_code=409, detail="Store already exists. Set overwrite=true to replace.")
-            
-            if not target_store_exists:
-                create_store(user_id, model_id)
-            
-            # Load and validate data
-            vec_path = os.path.join(tmpdir, "vectors.npz")
-            meta_path = os.path.join(tmpdir, "metadata.jsonl")
-            
-            loaded = mx.load(vec_path)
-            if "vectors" not in loaded:
-                raise ValueError("vectors.npz missing 'vectors' key")
-            
-            vectors = loaded["vectors"]
-            
-            metadata = []
-            with open(meta_path, "r", encoding="utf-8") as f:
-                for i, line in enumerate(f):
-                    try:
-                        metadata.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        raise ValueError(f"Invalid JSON in metadata.jsonl at line {i+1}")
-            
-            # Consistency check
-            if vectors.shape[0] != len(metadata):
-                raise HTTPException(
-                    status_code=400, 
-                    detail=f"Data inconsistency: {vectors.shape[0]} vectors but {len(metadata)} metadata entries"
-                )
-            
-            # Import the data
-            add_vectors(user_id, model_id, vectors, metadata)
-            
-            logger.info(f"Successfully imported {len(metadata)} vectors to {user_id}/{model_id} by {client_id}")
-            return {"status": "imported", "user_id": user_id, "model_id": model_id, "count": len(metadata)}
-            
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.exception(f"Error during ZIP import for {user_id}/{model_id}")
-            raise HTTPException(status_code=500, detail=f"Failed to import ZIP: {str(e)}")
+    try:
+        # Validate file
+        if not file.filename.endswith('.zip'):
+            raise HTTPException(
+                status_code=400,
+                detail="File must be a ZIP archive"
+            )
+        
+        # Check if store exists
+        store_key = store_manager.get_store_key(request.user_id, request.model_id)
+        store_exists = store_key in store_manager._stores
+        
+        if store_exists and not request.overwrite_existing:
+            raise HTTPException(
+                status_code=409,
+                detail="Store exists. Set overwrite_existing=true to replace."
+            )
+        
+        # Read ZIP file
+        zip_content = await file.read()
+        
+        # Import in thread pool
+        import_result = await asyncio.get_event_loop().run_in_executor(
+            admin_executor,
+            _import_store_from_zip,
+            zip_content,
+            request,
+            store_exists
+        )
+        
+        import_time = (time.time() - start_time) * 1000
+        
+        logger.info(f"📥 Imported store: {request.user_id}/{request.model_id}")
+        
+        return ImportResponse(
+            success=True,
+            vectors_imported=import_result['vectors_imported'],
+            metadata_imported=import_result['metadata_imported'],
+            import_time_ms=import_time,
+            store_recreated=store_exists
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Import failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# Health check endpoint (no auth required)
-@router.get("/health")
-async def admin_health():
-    """Admin service health check."""
-    return {"status": "healthy", "service": "admin"}
+
+@router.post("/optimize_store")
+async def optimize_store(
+    user_id: str,
+    model_id: str,
+    background_tasks: BackgroundTasks,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Optimize store for better performance
+    Includes index optimization and memory cleanup
+    """
+    try:
+        store = await store_manager.get_store(user_id, model_id)
+        
+        if store.get_stats()['vector_count'] == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot optimize empty store"
+            )
+        
+        # Schedule optimization in background
+        background_tasks.add_task(
+            optimize_store_background,
+            user_id,
+            model_id
+        )
+        
+        return create_success_response({
+            "optimization_scheduled": True,
+            "user_id": user_id,
+            "model_id": model_id,
+            "message": "Store optimization running in background"
+        })
+        
+    except Exception as e:
+        logger.error(f"Optimization failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/bulk_operation")
+async def bulk_store_operation(
+    request: BulkStoreOperation,
+    background_tasks: BackgroundTasks,
+    api_key: str = Depends(verify_admin_key)
+):
+    """
+    Perform bulk operations on multiple stores
+    Requires admin privileges
+    """
+    try:
+        results = []
+        
+        for store_info in request.stores:
+            user_id = store_info['user_id']
+            model_id = store_info['model_id']
+            
+            try:
+                if request.operation == "create":
+                    config = request.config or VectorStoreConfig()
+                    await store_manager.get_store(user_id, model_id, config)
+                    results.append({"user_id": user_id, "model_id": model_id, "status": "created"})
+                
+                elif request.operation == "optimize":
+                    background_tasks.add_task(optimize_store_background, user_id, model_id)
+                    results.append({"user_id": user_id, "model_id": model_id, "status": "optimization_scheduled"})
+                
+                elif request.operation == "delete":
+                    store_key = store_manager.get_store_key(user_id, model_id)
+                    if store_key in store_manager._stores:
+                        store = store_manager._stores[store_key]
+                        store.clear()
+                        del store_manager._stores[store_key]
+                    results.append({"user_id": user_id, "model_id": model_id, "status": "deleted"})
+                
+                else:
+                    results.append({"user_id": user_id, "model_id": model_id, "status": "unsupported_operation"})
+                    
+            except Exception as e:
+                results.append({"user_id": user_id, "model_id": model_id, "status": "error", "error": str(e)})
+        
+        return create_success_response({
+            "bulk_operation": request.operation,
+            "total_stores": len(request.stores),
+            "results": results
+        })
+        
+    except Exception as e:
+        logger.error(f"Bulk operation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/maintenance")
+async def store_maintenance(
+    request: StoreMaintenanceRequest,
+    background_tasks: BackgroundTasks,
+    api_key: str = Depends(verify_admin_key)
+):
+    """
+    Perform maintenance operations on a store
+    """
+    try:
+        store = await store_manager.get_store(request.user_id, request.model_id)
+        
+        maintenance_results = []
+        
+        for operation in request.operations:
+            if operation == "optimize":
+                background_tasks.add_task(optimize_store_background, request.user_id, request.model_id)
+                maintenance_results.append({"operation": "optimize", "status": "scheduled"})
+                
+            elif operation == "compact":
+                # Force garbage collection and memory cleanup
+                background_tasks.add_task(_compact_store, store)
+                maintenance_results.append({"operation": "compact", "status": "scheduled"})
+                
+            elif operation == "reindex":
+                # Rebuild search indices
+                background_tasks.add_task(_reindex_store, store)
+                maintenance_results.append({"operation": "reindex", "status": "scheduled"})
+                
+            elif operation == "cleanup":
+                # Clean temporary files and caches
+                background_tasks.add_task(_cleanup_store, store)
+                maintenance_results.append({"operation": "cleanup", "status": "scheduled"})
+                
+            else:
+                maintenance_results.append({"operation": operation, "status": "unsupported"})
+        
+        return create_success_response({
+            "maintenance_scheduled": True,
+            "user_id": request.user_id,
+            "model_id": request.model_id,
+            "operations": maintenance_results
+        })
+        
+    except Exception as e:
+        logger.error(f"Maintenance failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/store_analytics/{user_id}/{model_id}")
+async def get_store_analytics(
+    user_id: str,
+    model_id: str,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Get detailed analytics for a specific store
+    """
+    try:
+        store = await store_manager.get_store(user_id, model_id)
+        stats = store.get_stats()
+        
+        # Calculate additional analytics
+        analytics = {
+            "basic_stats": stats,
+            "performance_metrics": {
+                "estimated_qps": min(1000, stats['vector_count'] / 10),  # Rough estimate
+                "memory_efficiency": stats['memory_usage_mb'] / max(stats['vector_count'], 1),
+                "index_efficiency": "optimal" if stats['index_type'] == "hnsw" else "basic"
+            },
+            "recommendations": []
+        }
+        
+        # Add recommendations based on stats
+        if stats['vector_count'] > 10000 and stats['index_type'] == "flat":
+            analytics["recommendations"].append("Consider switching to HNSW index for better performance")
+        
+        if stats['memory_usage_mb'] > 1000:
+            analytics["recommendations"].append("Large memory usage detected, consider optimization")
+        
+        return analytics
+        
+    except Exception as e:
+        logger.error(f"Analytics failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Background task functions
+async def optimize_store_background(user_id: str, model_id: str):
+    """Background store optimization"""
+    try:
+        store = await store_manager.get_store(user_id, model_id)
+        await asyncio.get_event_loop().run_in_executor(
+            admin_executor,
+            store.optimize
+        )
+        logger.info(f"✅ Optimized store: {user_id}/{model_id}")
+    except Exception as e:
+        logger.error(f"Background optimization failed: {e}")
+
+
+async def _compact_store(store: MLXVectorStore):
+    """Compact store data"""
+    try:
+        # Force memory cleanup and reorganization
+        store._save_store()
+        logger.info("✅ Store compaction completed")
+    except Exception as e:
+        logger.error(f"Store compaction failed: {e}")
+
+
+async def _reindex_store(store: MLXVectorStore):
+    """Rebuild store indices"""
+    try:
+        # Future: HNSW index rebuilding
+        store.optimize()
+        logger.info("✅ Store reindexing completed")
+    except Exception as e:
+        logger.error(f"Store reindexing failed: {e}")
+
+
+async def _cleanup_store(store: MLXVectorStore):
+    """Clean up temporary files"""
+    try:
+        # Clean temporary files and caches
+        temp_files = store.store_path.glob("*.tmp")
+        for temp_file in temp_files:
+            temp_file.unlink(missing_ok=True)
+        logger.info("✅ Store cleanup completed")
+    except Exception as e:
+        logger.error(f"Store cleanup failed: {e}")
+
+
+# Helper functions for import/export
+def _create_store_export(store: MLXVectorStore, request: ExportRequest) -> Path:
+    """Create ZIP export of store data"""
+    export_dir = Path("./exports")
+    export_dir.mkdir(exist_ok=True)
+    
+    export_path = export_dir / f"{request.user_id}_{request.model_id}_export.zip"
+    
+    with zipfile.ZipFile(export_path, 'w', zipfile.ZIP_DEFLATED, 
+                        compresslevel=request.compression_level) as zf:
+        
+        # Add vector data
+        if (store.store_path / "vectors.npz").exists():
+            zf.write(store.store_path / "vectors.npz", "vectors.npz")
+        
+        # Add metadata if requested
+        if request.include_metadata and (store.store_path / "metadata.jsonl").exists():
+            zf.write(store.store_path / "metadata.jsonl", "metadata.jsonl")
+        
+        # Add configuration
+        if (store.store_path / "config.json").exists():
+            zf.write(store.store_path / "config.json", "config.json")
+        
+        # Add export manifest
+        manifest = {
+            "export_version": "1.0",
+            "user_id": request.user_id,
+            "model_id": request.model_id,
+            "export_timestamp": time.time(),
+            "vector_count": store.get_stats()['vector_count'],
+            "dimension": store.get_stats()['dimension']
+        }
+        
+        manifest_json = json.dumps(manifest, indent=2)
+        zf.writestr("manifest.json", manifest_json)
+    
+    return export_path
+
+
+def _import_store_from_zip(zip_content: bytes, request: ImportRequest, store_exists: bool) -> Dict[str, int]:
+    """Import store data from ZIP content"""
+    
+    with zipfile.ZipFile(io.BytesIO(zip_content), 'r') as zf:
+        # Read manifest
+        manifest = json.loads(zf.read("manifest.json").decode())
+        
+        # Create store directory
+        store_path = Path(f"~/.team_mind_data/vector_stores/{request.user_id}/{request.model_id}")
+        store_path.mkdir(parents=True, exist_ok=True)
+        
+        # Extract files
+        vectors_imported = 0
+        metadata_imported = 0
+        
+        if "vectors.npz" in zf.namelist():
+            zf.extract("vectors.npz", store_path)
+            vectors_imported = manifest.get('vector_count', 0)
+        
+        if "metadata.jsonl" in zf.namelist():
+            zf.extract("metadata.jsonl", store_path)
+            # Count metadata entries
+            metadata_content = zf.read("metadata.jsonl").decode()
+            metadata_imported = len([line for line in metadata_content.split('\n') if line.strip()])
+        
+        if "config.json" in zf.namelist():
+            zf.extract("config.json", store_path)
+    
+    return {
+        "vectors_imported": vectors_imported,
+        "metadata_imported": metadata_imported
+    }
