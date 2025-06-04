@@ -8,8 +8,10 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
-
-# Load environment variables
+# In main.py
+from api.routes import auth_routes # (oder wie auch immer Ihre Importstruktur ist)
+app.include_router(auth_routes.router)
+Load environment variables
 load_dotenv()
 
 # Configure logging

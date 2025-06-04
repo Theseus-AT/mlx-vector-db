@@ -11,6 +11,46 @@ import mlx.core as mx
 import logging
 
 logger = logging.getLogger("mlx_vector_db.performance")
+# In api/routes/vectors.py (Beispielhafte Anpassung)
+
+from fastapi import APIRouter, Depends, HTTPException, status # status hinzugefügt
+# ... andere Importe ...
+from security.auth import get_current_user_payload # Für JWT-Payload
+from security.rbac import require_permission, Permission, Role # Für RBAC
+
+# ... (bestehende Pydantic Modelle) ...
+
+# Beispiel: Anpassung der Route /vectors/query
+@router.post("/query", response_model=QueryResultsResponse)
+@require_permission(Permission.QUERY_VECTORS) # RBAC-Schutz
+async def query_vector_data(
+    request: VectorQueryRequest,
+    current_user_payload: Dict[str, Any] = Depends(get_current_user_payload) # JWT Auth
+):
+    # Multi-Tenancy Check: Sicherstellen, dass der User (aus JWT) auf den angefragten Store zugreifen darf.
+    # Diese Logik hängt davon ab, wie Sie User-Berechtigungen auf Stores verwalten.
+    # Einfaches Beispiel: User darf nur auf Stores mit seiner eigenen User-ID zugreifen.
+    jwt_user_id = current_user_payload.get("sub")
+    if request.user_id != jwt_user_id and Role.ADMIN.value not in current_user_payload.get("roles", []):
+        # Wenn der angeforderte user_id nicht der des Tokens ist UND der User kein Admin ist
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"User {jwt_user_id} is not authorized to access data for user {request.user_id}"
+        )
+
+    # Bestehende Logik zur Vektorabfrage
+    arr = np.array(request.query, dtype=np.float32) # Bleibt, da FastAPI JSON-Listen liefert
+    # Hier könnte eine Konvertierung zu mx.array erfolgen, wenn query_vectors dies erwartet.
+    # query_mx = mx.array(request.query, dtype=mx.float32)
+    
+    results = query_vectors(
+        request.user_id,
+        request.model_id,
+        arr, # oder query_mx
+        k=request.k,
+        filter_metadata=request.filter_metadata
+    )
+    return {"results": results}
 
 from security.auth import verify_api_key, get_client_identifier
 from service.vector_store import get_store_path, store_exists
