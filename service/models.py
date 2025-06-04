@@ -295,6 +295,38 @@ class ImportRequest(BaseModel):
     )
 
 
+class ExportResponse(BaseModel):
+    """Response model for export operations"""
+    message: str
+    export_path: str
+    format: str
+    vectors_exported: int
+    file_size_mb: float
+
+
+class ImportResponse(BaseModel):
+    """Response model for import operations"""
+    message: str
+    vectors_imported: int
+    format: str
+    merge_mode: bool
+
+
+class BackupResponse(BaseModel):
+    """Response model for backup operations"""
+    message: str
+    backup_path: str
+    backup_size_mb: float
+    timestamp: str
+
+
+class RestoreResponse(BaseModel):
+    """Response model for restore operations"""
+    message: str
+    vectors_restored: int
+    restore_time_ms: float
+
+
 class BackupRequest(BaseModel):
     """Request model for backup operations"""
     destination_path: Optional[str] = Field(
@@ -428,9 +460,13 @@ __all__ = [
     'HealthResponse',
     'ErrorResponse',
     'ExportRequest',
+    'ExportResponse',
     'ImportRequest',
+    'ImportResponse',
     'BackupRequest',
+    'BackupResponse',
     'RestoreRequest',
+    'RestoreResponse',
     'validate_vector_dimension',
     'validate_vectors_batch'
 ]
