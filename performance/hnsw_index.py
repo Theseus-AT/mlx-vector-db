@@ -1,381 +1,558 @@
-# performance/hnsw_index.py
 """
-Hierarchical Navigable Small World (HNSW) Index for MLX Vector Database
-Provides O(log n) approximate nearest neighbor search
+HNSW (Hierarchical Navigable Small World) Index Implementation for MLX
+Optimized for Apple Silicon using MLX framework
 """
-import math
-import random
-import logging
-from typing import List, Dict, Tuple, Set, Optional
-import numpy as np
+
 import mlx.core as mx
-# import mlx.core.linalg as mxl  # Falls nicht verfügbar, nutzen wir mx direkt
-from dataclasses import dataclass
-from pathlib import Path
+import numpy as np
+from typing import List, Tuple, Optional, Set, Dict
 import pickle
+from dataclasses import dataclass
+import heapq
+import random
+from pathlib import Path
+import json
 import time
 
-logger = logging.getLogger("mlx_vector_db.hnsw")
-
 @dataclass
+class HNSWConfig:
+    """Configuration for HNSW index"""
+    M: int = 16  # Number of bi-directional links created for each node
+    ef_construction: int = 200  # Size of dynamic candidate list
+    ef_search: int = 50  # Size of dynamic list for search
+    max_m: int = 16  # Maximum allowed connections for any node
+    seed: int = 42
+    distance_type: str = "cosine"  # "cosine" or "euclidean"
+    
 class HNSWNode:
     """Node in the HNSW graph"""
-    vector_id: int
-    vector: mx.array
-    level: int
-    connections: Dict[int, Set[int]]  # level -> set of connected node IDs
-    
-    def __post_init__(self):
-        if not self.connections:
-            self.connections = {i: set() for i in range(self.level + 1)}
+    def __init__(self, idx: int, level: int):
+        self.idx = idx
+        self.level = level
+        self.neighbors: Dict[int, Set[int]] = {i: set() for i in range(level + 1)}
 
 class HNSWIndex:
     """
-    HNSW Index for fast approximate nearest neighbor search
-    
-    Based on the paper: "Efficient and robust approximate nearest neighbor 
-    search using Hierarchical Navigable Small World graphs"
+    Hierarchical Navigable Small World Index for fast approximate nearest neighbor search
+    Optimized for MLX arrays on Apple Silicon
     """
     
-    def __init__(
-        self,
-        dimension: int,
-        max_connections: int = 16,
-        max_connections_layer0: int = 32,
-        ef_construction: int = 200,
-        ef_search: int = 50,
-        ml: float = 1.0 / math.log(2)
-    ):
-        self.dimension = dimension
-        self.max_connections = max_connections  # M
-        self.max_connections_layer0 = max_connections_layer0  # Mmax
-        self.ef_construction = ef_construction
-        self.ef_search = ef_search
-        self.ml = ml  # level generation factor
-        
+    def __init__(self, config: HNSWConfig = HNSWConfig()):
+        self.config = config
         self.nodes: Dict[int, HNSWNode] = {}
         self.entry_point: Optional[int] = None
-        self.node_count = 0
+        self.vectors: Optional[mx.array] = None
+        self.element_count = 0
+        random.seed(config.seed)
         
-        logger.info(f"HNSW Index initialized: dim={dimension}, M={max_connections}, ef_construction={ef_construction}")
-    
-    def _select_level(self) -> int:
-        """Select level for new node using exponential decay"""
-        level = int(-math.log(random.uniform(0, 1)) * self.ml)
+        # MLX-specific optimizations
+        self.use_metal = mx.metal.is_available()
+        
+    def _get_random_level(self) -> int:
+        """Select level for a new node using exponential decay probability"""
+        level = 0
+        while random.random() < 0.5 and level < 16:
+            level += 1
         return level
-    
-    @mx.compile
-    def _compute_distance(self, vec1: mx.array, vec2: mx.array) -> float:
-        """Compiled cosine distance computation for performance"""
-        # Normalize vectors
-        norm1 = mx.sqrt(mx.sum(vec1 * vec1))
-        norm2 = mx.sqrt(mx.sum(vec2 * vec2))
         
-        # Avoid division by zero
-        norm1 = mx.maximum(norm1, 1e-10)
-        norm2 = mx.maximum(norm2, 1e-10)
+    def _compute_distance(self, idx1: int, idx2: int) -> float:
+        """Compute distance between two vectors using MLX operations"""
+        vec1 = self.vectors[idx1]
+        vec2 = self.vectors[idx2]
         
-        normalized1 = vec1 / norm1
-        normalized2 = vec2 / norm2
+        if self.config.distance_type == "cosine":
+            # Cosine distance = 1 - cosine_similarity
+            # Normalize vectors for cosine similarity
+            norm1 = mx.sqrt(mx.sum(vec1 * vec1))
+            norm2 = mx.sqrt(mx.sum(vec2 * vec2))
+            
+            # Avoid division by zero
+            norm1 = mx.maximum(norm1, 1e-8)
+            norm2 = mx.maximum(norm2, 1e-8)
+            
+            vec1_normalized = vec1 / norm1
+            vec2_normalized = vec2 / norm2
+            
+            # Compute cosine similarity
+            cosine_sim = mx.sum(vec1_normalized * vec2_normalized)
+            
+            # Return cosine distance
+            distance = 1.0 - cosine_sim
+        else:
+            # Euclidean distance
+            diff = vec1 - vec2
+            distance = mx.sqrt(mx.sum(diff * diff))
+            
+        # Evaluate the distance to get a scalar
+        mx.eval(distance)
+        return float(distance)
         
-        # Cosine similarity -> distance
-        similarity = mx.sum(normalized1 * normalized2)
-        distance = 1.0 - similarity
+    def _compute_batch_distances(self, query_vec: mx.array, indices: List[int]) -> mx.array:
+        """Compute distances from query to multiple vectors in batch using MLX"""
+        if not indices:
+            return mx.array([])
+            
+        # Stack vectors for batch processing
+        batch_vecs = mx.stack([self.vectors[idx] for idx in indices])
         
-        return distance.item()
-    
-    def _search_layer(
-        self, 
-        query: mx.array, 
-        entry_points: Set[int], 
-        num_closest: int, 
-        level: int
-    ) -> List[Tuple[float, int]]:
-        """Search for closest nodes in a specific layer"""
+        if self.config.distance_type == "cosine":
+            # Normalize query vector
+            query_norm = mx.sqrt(mx.sum(query_vec * query_vec))
+            query_norm = mx.maximum(query_norm, 1e-8)
+            query_normalized = query_vec / query_norm
+            
+            # Normalize batch vectors
+            batch_norms = mx.sqrt(mx.sum(batch_vecs * batch_vecs, axis=1))
+            batch_norms = mx.maximum(batch_norms, 1e-8)
+            batch_normalized = batch_vecs / batch_norms[:, None]
+            
+            # Compute cosine similarities
+            cosine_sims = mx.sum(batch_normalized * query_normalized[None, :], axis=1)
+            
+            # Convert to distances
+            distances = 1.0 - cosine_sims
+        else:
+            # Euclidean distances
+            diff = batch_vecs - query_normalized[None, :]
+            distances = mx.sqrt(mx.sum(diff * diff, axis=1))
+            
+        mx.eval(distances)
+        return distances
+        
+    def _search_layer(self, query: mx.array, entry_points: Set[int], 
+                     num_closest: int, layer: int) -> List[Tuple[float, int]]:
+        """Search for nearest neighbors in a specific layer"""
         visited = set()
         candidates = []
-        dynamic_list = []
+        nearest = []
         
         # Initialize with entry points
-        for ep_id in entry_points:
-            if ep_id in self.nodes:
-                distance = self._compute_distance(query, self.nodes[ep_id].vector)
-                candidates.append((distance, ep_id))
-                dynamic_list.append((distance, ep_id))
-                visited.add(ep_id)
-        
-        candidates.sort()
-        dynamic_list.sort(reverse=True)  # Keep worst candidates at front
-        
+        for point in entry_points:
+            dist = self._compute_distance(point, -1) if point == -1 else self._compute_distance(point, point)
+            heapq.heappush(candidates, (-dist, point))
+            heapq.heappush(nearest, (dist, point))
+            visited.add(point)
+            
         while candidates:
-            current_dist, current_id = candidates.pop(0)
+            curr_dist, curr_idx = heapq.heappop(candidates)
+            curr_dist = -curr_dist
             
-            # If current distance is worse than worst in dynamic list, stop
-            if dynamic_list and current_dist > dynamic_list[0][0]:
+            if curr_dist > nearest[0][0]:
                 break
+                
+            # Check neighbors at the current layer
+            node = self.nodes[curr_idx]
+            if layer < len(node.neighbors):
+                for neighbor_idx in node.neighbors[layer]:
+                    if neighbor_idx not in visited:
+                        visited.add(neighbor_idx)
+                        
+                        if neighbor_idx < len(self.vectors):
+                            dist = self._compute_distance_to_query(query, neighbor_idx)
+                            
+                            if dist < nearest[0][0] or len(nearest) < num_closest:
+                                heapq.heappush(candidates, (-dist, neighbor_idx))
+                                heapq.heappush(nearest, (dist, neighbor_idx))
+                                
+                                if len(nearest) > num_closest:
+                                    heapq.heappop(nearest)
+                                    
+        return nearest
+        
+    def _compute_distance_to_query(self, query: mx.array, idx: int) -> float:
+        """Compute distance between query vector and indexed vector"""
+        vec = self.vectors[idx]
+        
+        if self.config.distance_type == "cosine":
+            # Normalize vectors
+            query_norm = mx.sqrt(mx.sum(query * query))
+            vec_norm = mx.sqrt(mx.sum(vec * vec))
             
-            # Explore neighbors
-            current_node = self.nodes[current_id]
-            neighbors = current_node.connections.get(level, set())
+            query_norm = mx.maximum(query_norm, 1e-8)
+            vec_norm = mx.maximum(vec_norm, 1e-8)
             
-            for neighbor_id in neighbors:
-                if neighbor_id not in visited and neighbor_id in self.nodes:
-                    visited.add(neighbor_id)
-                    distance = self._compute_distance(query, self.nodes[neighbor_id].vector)
+            query_normalized = query / query_norm
+            vec_normalized = vec / vec_norm
+            
+            cosine_sim = mx.sum(query_normalized * vec_normalized)
+            distance = 1.0 - cosine_sim
+        else:
+            diff = query - vec
+            distance = mx.sqrt(mx.sum(diff * diff))
+            
+        mx.eval(distance)
+        return float(distance)
+        
+    def build(self, vectors: mx.array, show_progress: bool = True):
+        """Build HNSW index from vectors"""
+        self.vectors = vectors
+        n_vectors = vectors.shape[0]
+        
+        if show_progress:
+            print(f"Building HNSW index for {n_vectors} vectors...")
+            
+        # Initialize first node
+        if n_vectors > 0:
+            level = self._get_random_level()
+            self.nodes[0] = HNSWNode(0, level)
+            self.entry_point = 0
+            self.element_count = 1
+            
+            # Insert remaining vectors
+            for idx in range(1, n_vectors):
+                if show_progress and idx % 1000 == 0:
+                    print(f"Progress: {idx}/{n_vectors} vectors indexed")
                     
-                    # Add to dynamic list if it's better or list is not full
-                    if len(dynamic_list) < num_closest:
-                        dynamic_list.append((distance, neighbor_id))
-                        candidates.append((distance, neighbor_id))
-                        dynamic_list.sort(reverse=True)
-                        candidates.sort()
-                    elif distance < dynamic_list[0][0]:
-                        dynamic_list[0] = (distance, neighbor_id)
-                        candidates.append((distance, neighbor_id))
-                        dynamic_list.sort(reverse=True)
-                        candidates.sort()
-        
-        # Return closest nodes (best first)
-        dynamic_list.sort()
-        return dynamic_list[:num_closest]
-    
-    def _select_neighbors_heuristic(
-        self, 
-        candidates: List[Tuple[float, int]], 
-        max_connections: int
-    ) -> Set[int]:
-        """Select neighbors using heuristic to maintain connectivity"""
-        if len(candidates) <= max_connections:
-            return {node_id for _, node_id in candidates}
-        
-        # Sort by distance (closest first)
-        candidates.sort()
-        
-        selected = set()
-        
-        # Always include closest
-        if candidates:
-            selected.add(candidates[0][1])
-            candidates = candidates[1:]
-        
-        # Greedily select diverse neighbors
-        while len(selected) < max_connections and candidates:
-            best_candidate = candidates.pop(0)
-            selected.add(best_candidate[1])
-        
-        return selected
-    
-    def add_vector(self, vector_id: int, vector: mx.array) -> None:
-        """Add a new vector to the index"""
-        if not isinstance(vector, mx.array):
-            vector = mx.array(vector)
-        
-        if vector.shape[-1] != self.dimension:
-            raise ValueError(f"Vector dimension {vector.shape[-1]} != index dimension {self.dimension}")
-        
-        # Flatten vector if needed
-        if vector.ndim > 1:
-            vector = vector.flatten()
-        
-        level = self._select_level()
-        node = HNSWNode(vector_id, vector, level, {})
-        
-        # If this is the first node, make it the entry point
+                self._insert(idx)
+                
+        if show_progress:
+            print(f"HNSW index built successfully!")
+            
+    def _insert(self, idx: int):
+        """Insert a new vector into the HNSW graph"""
         if self.entry_point is None:
-            self.entry_point = vector_id
-            self.nodes[vector_id] = node
-            self.node_count += 1
-            logger.debug(f"Added first node {vector_id} as entry point at level {level}")
+            level = self._get_random_level()
+            self.nodes[idx] = HNSWNode(idx, level)
+            self.entry_point = idx
+            self.element_count = 1
             return
-        
-        # Search for closest nodes at each level
-        entry_points = {self.entry_point}
-        
-        # Search from top level down to level+1
-        for lev in range(self.nodes[self.entry_point].level, level, -1):
-            entry_points = {node_id for _, node_id in self._search_layer(vector, entry_points, 1, lev)}
-        
-        # Search and connect at each level from level down to 0
-        for lev in range(min(level, self.nodes[self.entry_point].level), -1, -1):
-            candidates = self._search_layer(vector, entry_points, self.ef_construction, lev)
             
-            # Select neighbors
-            max_conn = self.max_connections_layer0 if lev == 0 else self.max_connections
-            neighbors = self._select_neighbors_heuristic(candidates, max_conn)
+        level = self._get_random_level()
+        node = HNSWNode(idx, level)
+        self.nodes[idx] = node
+        
+        # Find nearest neighbors at all layers
+        nearest = []
+        curr_nearest = [(-float('inf'), self.entry_point)]
+        
+        for lc in range(level, -1, -1):
+            nearest = self._search_layer_for_insertion(idx, curr_nearest, lc)
+            m = self.config.M if lc > 0 else self.config.M * 2
             
-            # Add bidirectional connections
-            node.connections[lev] = neighbors
-            for neighbor_id in neighbors:
-                if neighbor_id in self.nodes:
-                    self.nodes[neighbor_id].connections[lev].add(vector_id)
+            # Select m nearest neighbors
+            neighbors = self._select_neighbors_heuristic(idx, nearest, m, lc)
+            
+            # Add bidirectional links
+            for neighbor_idx in neighbors:
+                node.neighbors[lc].add(neighbor_idx)
+                self.nodes[neighbor_idx].neighbors[lc].add(idx)
+                
+                # Prune neighbors if needed
+                max_neighbors = self.config.M if lc > 0 else self.config.M * 2
+                if len(self.nodes[neighbor_idx].neighbors[lc]) > max_neighbors:
+                    self._prune_neighbors(neighbor_idx, lc)
                     
-                    # Prune connections if necessary
-                    if len(self.nodes[neighbor_id].connections[lev]) > max_conn:
-                        # Recompute neighbors for this node
-                        neighbor_candidates = []
-                        for connected_id in self.nodes[neighbor_id].connections[lev]:
-                            if connected_id in self.nodes:
-                                dist = self._compute_distance(
-                                    self.nodes[neighbor_id].vector,
-                                    self.nodes[connected_id].vector
-                                )
-                                neighbor_candidates.append((dist, connected_id))
-                        
-                        new_neighbors = self._select_neighbors_heuristic(neighbor_candidates, max_conn)
-                        
-                        # Update connections
-                        old_connections = self.nodes[neighbor_id].connections[lev]
-                        self.nodes[neighbor_id].connections[lev] = new_neighbors
-                        
-                        # Remove bidirectional connections for pruned neighbors
-                        for removed_id in old_connections - new_neighbors:
-                            if removed_id in self.nodes and lev in self.nodes[removed_id].connections:
-                                self.nodes[removed_id].connections[lev].discard(neighbor_id)
+            curr_nearest = nearest
             
-            entry_points = neighbors
+        self.element_count += 1
         
-        # Update entry point if necessary
-        if level > self.nodes[self.entry_point].level:
-            self.entry_point = vector_id
+    def _search_layer_for_insertion(self, idx: int, entry_points: List[Tuple[float, int]], 
+                                   layer: int) -> List[Tuple[float, int]]:
+        """Search layer during insertion"""
+        visited = set()
+        candidates = []
+        nearest = []
         
-        self.nodes[vector_id] = node
-        self.node_count += 1
+        for dist, point in entry_points:
+            if point != idx:
+                actual_dist = self._compute_distance(idx, point)
+                heapq.heappush(candidates, (-actual_dist, point))
+                heapq.heappush(nearest, (actual_dist, point))
+                visited.add(point)
+                
+        while candidates:
+            curr_dist, curr_idx = heapq.heappop(candidates)
+            curr_dist = -curr_dist
+            
+            if curr_dist > nearest[0][0]:
+                break
+                
+            node = self.nodes[curr_idx]
+            if layer < len(node.neighbors):
+                for neighbor_idx in node.neighbors[layer]:
+                    if neighbor_idx not in visited and neighbor_idx != idx:
+                        visited.add(neighbor_idx)
+                        dist = self._compute_distance(idx, neighbor_idx)
+                        
+                        if dist < nearest[0][0] or len(nearest) < self.config.ef_construction:
+                            heapq.heappush(candidates, (-dist, neighbor_idx))
+                            heapq.heappush(nearest, (dist, neighbor_idx))
+                            
+                            if len(nearest) > self.config.ef_construction:
+                                heapq.heappop(nearest)
+                                
+        return nearest
         
-        if self.node_count % 1000 == 0:
-            logger.info(f"HNSW index now contains {self.node_count} nodes")
-    
-    def search(
-        self, 
-        query: mx.array, 
-        k: int = 10, 
-        ef: Optional[int] = None
-    ) -> List[Tuple[int, float]]:
-        """Search for k nearest neighbors"""
-        if not isinstance(query, mx.array):
-            query = mx.array(query)
+    def _select_neighbors_heuristic(self, idx: int, candidates: List[Tuple[float, int]], 
+                                   m: int, layer: int) -> List[int]:
+        """Select neighbors using a heuristic to maintain connectivity"""
+        # Sort by distance
+        candidates = sorted(candidates, key=lambda x: x[0])
         
-        if query.shape[-1] != self.dimension:
-            raise ValueError(f"Query dimension {query.shape[-1]} != index dimension {self.dimension}")
+        selected = []
+        for dist, candidate_idx in candidates:
+            if len(selected) >= m:
+                break
+                
+            # Simple heuristic: always include closest neighbors
+            selected.append(candidate_idx)
+            
+        return selected
         
-        # Flatten query if needed
-        if query.ndim > 1:
-            query = query.flatten()
+    def _prune_neighbors(self, idx: int, layer: int):
+        """Prune excess neighbors to maintain size constraints"""
+        node = self.nodes[idx]
+        neighbors = list(node.neighbors[layer])
         
+        # Compute distances to all neighbors
+        neighbor_dists = [(self._compute_distance(idx, n), n) for n in neighbors]
+        neighbor_dists.sort()
+        
+        # Keep only the closest neighbors
+        max_neighbors = self.config.M if layer > 0 else self.config.M * 2
+        node.neighbors[layer] = set([n for _, n in neighbor_dists[:max_neighbors]])
+        
+        # Remove pruned connections from other nodes
+        for _, neighbor_idx in neighbor_dists[max_neighbors:]:
+            self.nodes[neighbor_idx].neighbors[layer].discard(idx)
+            
+    def search(self, query: mx.array, k: int, ef: Optional[int] = None) -> Tuple[mx.array, mx.array]:
+        """
+        Search for k nearest neighbors
+        Returns: (indices, distances) as MLX arrays
+        """
         if self.entry_point is None:
-            return []
+            return mx.array([]), mx.array([])
+            
+        ef = ef or self.config.ef_search
         
-        ef = ef or max(self.ef_search, k)
+        # Search from top layer to layer 0
+        nearest = [(-float('inf'), self.entry_point)]
         
-        # Search from top level down to level 1
-        entry_points = {self.entry_point}
-        for lev in range(self.nodes[self.entry_point].level, 0, -1):
-            entry_points = {node_id for _, node_id in self._search_layer(query, entry_points, 1, lev)}
+        for layer in range(self.nodes[self.entry_point].level, -1, -1):
+            nearest = self._search_layer(query, set([n[1] for n in nearest]), 
+                                       ef if layer == 0 else 1, layer)
+                                       
+        # Extract top k results
+        nearest.sort()
+        indices = [idx for _, idx in nearest[:k]]
+        distances = [dist for dist, _ in nearest[:k]]
         
-        # Search at level 0 with ef
-        candidates = self._search_layer(query, entry_points, ef, 0)
+        return mx.array(indices), mx.array(distances)
         
-        # Return top k results as (vector_id, distance)
-        return [(node_id, distance) for distance, node_id in candidates[:k]]
-    
-    def batch_search(
-        self, 
-        queries: mx.array, 
-        k: int = 10, 
-        ef: Optional[int] = None
-    ) -> List[List[Tuple[int, float]]]:
-        """Search for multiple queries"""
-        if not isinstance(queries, mx.array):
-            queries = mx.array(queries)
+    def batch_search(self, queries: mx.array, k: int, 
+                    ef: Optional[int] = None) -> Tuple[mx.array, mx.array]:
+        """
+        Batch search for multiple queries
+        Returns: (indices, distances) with shape (n_queries, k)
+        """
+        n_queries = queries.shape[0]
+        all_indices = []
+        all_distances = []
         
-        if queries.ndim == 1:
-            return [self.search(queries, k, ef)]
+        for i in range(n_queries):
+            indices, distances = self.search(queries[i], k, ef)
+            all_indices.append(indices)
+            all_distances.append(distances)
+            
+        return mx.stack(all_indices), mx.stack(all_distances)
         
-        results = []
-        for i in range(queries.shape[0]):
-            query = queries[i]
-            results.append(self.search(query, k, ef))
-        
-        return results
-    
-    def save(self, file_path: Path) -> None:
+    def save(self, path: str):
         """Save HNSW index to disk"""
-        # Convert MLX arrays to numpy for pickling
-        save_data = {
-            'dimension': self.dimension,
-            'max_connections': self.max_connections,
-            'max_connections_layer0': self.max_connections_layer0,
-            'ef_construction': self.ef_construction,
-            'ef_search': self.ef_search,
-            'ml': self.ml,
+        path = Path(path)
+        
+        # Save configuration
+        config_path = path.with_suffix('.config.json')
+        with open(config_path, 'w') as f:
+            json.dump(self.config.__dict__, f)
+            
+        # Save graph structure
+        graph_data = {
             'entry_point': self.entry_point,
-            'node_count': self.node_count,
+            'element_count': self.element_count,
             'nodes': {}
         }
         
-        # Convert nodes
-        for node_id, node in self.nodes.items():
-            save_data['nodes'][node_id] = {
-                'vector_id': node.vector_id,
-                'vector': np.array(node.vector),  # Convert to numpy
+        for idx, node in self.nodes.items():
+            graph_data['nodes'][idx] = {
                 'level': node.level,
-                'connections': node.connections
+                'neighbors': {str(l): list(neighbors) 
+                           for l, neighbors in node.neighbors.items()}
             }
+            
+        graph_path = path.with_suffix('.graph.pkl')
+        with open(graph_path, 'wb') as f:
+            pickle.dump(graph_data, f)
+            
+        print(f"HNSW index saved to {path}")
         
-        with open(file_path, 'wb') as f:
-            pickle.dump(save_data, f)
-        
-        logger.info(f"HNSW index saved to {file_path}")
-    
-    @classmethod
-    def load(cls, file_path: Path) -> 'HNSWIndex':
+    def load(self, path: str):
         """Load HNSW index from disk"""
-        with open(file_path, 'rb') as f:
-            save_data = pickle.load(f)
+        path = Path(path)
         
-        # Create new index
-        index = cls(
-            dimension=save_data['dimension'],
-            max_connections=save_data['max_connections'],
-            max_connections_layer0=save_data['max_connections_layer0'],
-            ef_construction=save_data['ef_construction'],
-            ef_search=save_data['ef_search'],
-            ml=save_data['ml']
-        )
+        # Load configuration
+        config_path = path.with_suffix('.config.json')
+        with open(config_path, 'r') as f:
+            config_dict = json.load(f)
+            self.config = HNSWConfig(**config_dict)
+            
+        # Load graph structure
+        graph_path = path.with_suffix('.graph.pkl')
+        with open(graph_path, 'rb') as f:
+            graph_data = pickle.load(f)
+            
+        self.entry_point = graph_data['entry_point']
+        self.element_count = graph_data['element_count']
+        self.nodes = {}
         
-        index.entry_point = save_data['entry_point']
-        index.node_count = save_data['node_count']
+        for idx, node_data in graph_data['nodes'].items():
+            idx = int(idx)
+            node = HNSWNode(idx, node_data['level'])
+            
+            for level, neighbors in node_data['neighbors'].items():
+                level = int(level)
+                node.neighbors[level] = set(neighbors)
+                
+            self.nodes[idx] = node
+            
+        print(f"HNSW index loaded from {path}")
         
-        # Convert nodes back
-        for node_id, node_data in save_data['nodes'].items():
-            vector = mx.array(node_data['vector'])  # Convert back to MLX
-            node = HNSWNode(
-                vector_id=node_data['vector_id'],
-                vector=vector,
-                level=node_data['level'],
-                connections=node_data['connections']
-            )
-            index.nodes[node_id] = node
-        
-        logger.info(f"HNSW index loaded from {file_path} with {index.node_count} nodes")
-        return index
-    
-    def get_stats(self) -> Dict:
-        """Get index statistics"""
+    def get_stats(self) -> Dict[str, any]:
+        """Get statistics about the index"""
         if not self.nodes:
-            return {"nodes": 0, "levels": 0, "avg_connections": 0}
-        
-        levels = [node.level for node in self.nodes.values()]
-        connections_count = []
+            return {'status': 'empty'}
+            
+        total_edges = 0
+        layer_stats = {}
         
         for node in self.nodes.values():
-            total_connections = sum(len(conns) for conns in node.connections.values())
-            connections_count.append(total_connections)
-        
+            for layer, neighbors in node.neighbors.items():
+                if layer not in layer_stats:
+                    layer_stats[layer] = {'nodes': 0, 'edges': 0}
+                    
+                layer_stats[layer]['nodes'] += 1
+                layer_stats[layer]['edges'] += len(neighbors)
+                total_edges += len(neighbors)
+                
         return {
-            "nodes": len(self.nodes),
-            "max_level": max(levels) if levels else 0,
-            "avg_level": sum(levels) / len(levels) if levels else 0,
-            "avg_connections": sum(connections_count) / len(connections_count) if connections_count else 0,
-            "entry_point": self.entry_point,
-            "dimension": self.dimension
+            'total_nodes': len(self.nodes),
+            'total_edges': total_edges // 2,  # Edges are bidirectional
+            'entry_point': self.entry_point,
+            'layers': layer_stats,
+            'config': self.config.__dict__
         }
+        
+    def optimize(self):
+        """Optimize the index for better search performance"""
+        # Pre-compute and cache frequently accessed distances
+        # This is especially useful for MLX's lazy evaluation
+        print("Optimizing HNSW index...")
+        
+        # Force evaluation of all vectors to ensure they're in memory
+        mx.eval(self.vectors)
+        
+        # Pre-normalize vectors if using cosine distance
+        if self.config.distance_type == "cosine":
+            norms = mx.sqrt(mx.sum(self.vectors * self.vectors, axis=1))
+            norms = mx.maximum(norms, 1e-8)
+            self.normalized_vectors = self.vectors / norms[:, None]
+            mx.eval(self.normalized_vectors)
+            
+        print("Optimization complete!")
+
+
+# Integration with VectorStore
+class HNSWVectorStore:
+    """Wrapper to integrate HNSW with existing VectorStore"""
+    
+    def __init__(self, vector_store, config: HNSWConfig = HNSWConfig()):
+        self.vector_store = vector_store
+        self.config = config
+        self.index: Optional[HNSWIndex] = None
+        
+    def build_index(self, force_rebuild: bool = False):
+        """Build or rebuild HNSW index"""
+        if self.vector_store.vectors is None:
+            return
+            
+        index_path = self.vector_store.store_path / "hnsw_index"
+        
+        if not force_rebuild and index_path.with_suffix('.graph.pkl').exists():
+            # Load existing index
+            self.index = HNSWIndex(self.config)
+            self.index.load(str(index_path))
+            self.index.vectors = self.vector_store.vectors
+        else:
+            # Build new index
+            self.index = HNSWIndex(self.config)
+            self.index.build(self.vector_store.vectors)
+            self.index.save(str(index_path))
+            
+    def query(self, query_vector: mx.array, k: int = 10) -> Tuple[mx.array, mx.array]:
+        """Query using HNSW index"""
+        if self.index is None:
+            # Fallback to brute force
+            return self.vector_store._brute_force_search(query_vector, k)
+            
+        return self.index.search(query_vector, k)
+        
+    def add_vectors(self, vectors: mx.array, metadata: List[Dict]):
+        """Add vectors and update index"""
+        # Add to vector store
+        start_idx = len(self.vector_store.vectors) if self.vector_store.vectors is not None else 0
+        self.vector_store.add_vectors(vectors, metadata)
+        
+        # Update HNSW index
+        if self.index is not None:
+            # Add new vectors to index
+            for i in range(vectors.shape[0]):
+                self.index._insert(start_idx + i)
+                
+            # Save updated index
+            index_path = self.vector_store.store_path / "hnsw_index"
+            self.index.save(str(index_path))
+
+
+# Demo usage
+if __name__ == "__main__":
+    # Create random vectors for testing
+    n_vectors = 10000
+    dim = 384
+    
+    print(f"Creating {n_vectors} random vectors of dimension {dim}...")
+    vectors = mx.random.normal((n_vectors, dim))
+    
+    # Build HNSW index
+    config = HNSWConfig(M=16, ef_construction=200, ef_search=50, distance_type="cosine")
+    index = HNSWIndex(config)
+    
+    start_time = time.time()
+    index.build(vectors)
+    build_time = time.time() - start_time
+    
+    print(f"Index built in {build_time:.2f} seconds")
+    print(f"Index stats: {index.get_stats()}")
+    
+    # Perform search
+    query = mx.random.normal((dim,))
+    k = 10
+    
+    start_time = time.time()
+    indices, distances = index.search(query, k)
+    search_time = time.time() - start_time
+    
+    print(f"\nSearch completed in {search_time*1000:.2f} ms")
+    print(f"Found {len(indices)} nearest neighbors")
+    print(f"Indices: {indices}")
+    print(f"Distances: {distances}")
+    
+    # Save and load test
+    index.save("test_index")
+    
+    new_index = HNSWIndex(config)
+    new_index.load("test_index")
+    new_index.vectors = vectors
+    
+    # Verify loaded index works
+    indices2, distances2 = new_index.search(query, k)
+    print(f"\nLoaded index produces same results: {mx.array_equal(indices, indices2)}")
