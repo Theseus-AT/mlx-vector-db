@@ -66,6 +66,9 @@ class IndexState(Enum):
 class AdaptiveHNSWConfig:
     """Production HNSW Configuration with Adaptive Parameters"""
     
+    # KORRIGIERT: 'metric' hinzugefügt, um den TypeError zu beheben.
+    metric: str = "l2" # 'l2' (Euclidean) or 'cosine'
+    
     # Core HNSW Parameters (auto-tuned if None)
     M: Optional[int] = None                    
     ef_construction: Optional[int] = None      
@@ -671,7 +674,8 @@ class ProductionHNSWIndex:
         )
         
         # Performance optimization
-        self._compiled_distance_fn = None
+        self._compiled_l2_distance = None
+        self._compiled_cosine_similarity = None
         if config.mlx_compilation:
             self._setup_compiled_functions()
         
@@ -690,17 +694,17 @@ class ProductionHNSWIndex:
         
         @mx.compile
         def compiled_cosine_similarity(query: mx.array, vectors: mx.array) -> mx.array:
-            query_norm = mx.linalg.norm(query)
+            # Note: This returns SIMILARITY (higher is better), not distance
+            query_norm = mx.linalg.norm(query, keepdims=True)
             vectors_norm = mx.linalg.norm(vectors, axis=1, keepdims=True)
             
             eps = mx.array(1e-8, dtype=query.dtype)
-            query_norm = mx.maximum(query_norm, eps)
-            vectors_norm = mx.maximum(vectors_norm, eps)
             
-            query_normalized = query / query_norm
-            vectors_normalized = vectors / vectors_norm
+            query_normalized = query / mx.maximum(query_norm, eps)
+            vectors_normalized = vectors / mx.maximum(vectors_norm, eps)
             
-            return mx.matmul(vectors_normalized, query_normalized)
+            # matmul for batch cosine similarity
+            return mx.matmul(vectors_normalized, query_normalized.T).flatten()
         
         self._compiled_l2_distance = compiled_l2_distance
         self._compiled_cosine_similarity = compiled_cosine_similarity
@@ -740,10 +744,11 @@ class ProductionHNSWIndex:
                 # Use tuned parameters for HNSW
                 self.M = params['M']
                 self.ef_construction = params['ef_construction']
+                self.config.metric = params.get('metric', self.config.metric) # Inherit metric
                 self.max_M = params.get('max_M', self.M)
                 self.max_M0 = params.get('max_M0', self.M * 2)
                 
-                logger.info(f"🏗️ Building HNSW index: {self.vector_count} vectors, M={self.M}, ef_c={self.ef_construction}")
+                logger.info(f"🏗️ Building HNSW index: {self.vector_count} vectors, M={self.M}, ef_c={self.ef_construction}, metric={self.config.metric}")
                 
                 # Parallel construction
                 if self.config.parallel_construction and self.vector_count > 5000:
@@ -882,11 +887,11 @@ class ProductionHNSWIndex:
             
             # Search from top layer down to target layer
             for lc in range(self.nodes[self.entry_point].level, level, -1):
-                current_nearest = self._search_layer(idx, current_nearest, 1, lc)
+                current_nearest, _ = self._search_layer(idx, current_nearest, 1, lc)
             
             # Add connections at each layer
             for lc in range(min(level, self.nodes[self.entry_point].level), -1, -1):
-                candidates = self._search_layer(idx, current_nearest, self.ef_construction, lc)
+                _, candidates = self._search_layer(idx, current_nearest, self.ef_construction, lc)
                 
                 m = self.max_M0 if lc == 0 else self.max_M
                 selected = self._select_neighbors_heuristic(candidates, m)
@@ -913,7 +918,7 @@ class ProductionHNSWIndex:
         
         candidates = []
         
-        if not self.nodes:
+        if not self.nodes or self.entry_point is None:
             return candidates
         
         # Start from entry point
@@ -921,14 +926,10 @@ class ProductionHNSWIndex:
         
         # Search down to level 0
         for level in range(self.nodes[self.entry_point].level, -1, -1):
-            layer_candidates = self._search_layer(vector_idx, current_nearest, self.ef_construction, level)
+            current_nearest, layer_candidates = self._search_layer(vector_idx, current_nearest, self.ef_construction, level)
             
             if level <= max_level:
                 candidates.extend(layer_candidates)
-            
-            # Select best candidate for next level
-            if layer_candidates:
-                current_nearest = {layer_candidates[0][1]}
         
         # Remove duplicates and sort by distance
         unique_candidates = {}
@@ -938,66 +939,80 @@ class ProductionHNSWIndex:
         
         return sorted([(dist, idx) for idx, dist in unique_candidates.items()])
     
-    def _search_layer(self, query_idx: int, entry_points: Set[int], ef: int, layer: int) -> List[Tuple[float, int]]:
-        """Search layer for nearest neighbors"""
+    def _search_layer(self, query_idx: int, entry_points: Set[int], ef: int, layer: int) -> Tuple[Set[int], List[Tuple[float, int]]]:
+        """Search layer for nearest neighbors. Returns best entry points for next layer and candidates."""
         
-        visited = set()
+        visited = set(entry_points)
+        
+        # Min-heap for candidates (distance, node_id) - lower distance is better
+        # Max-heap for results (distance, node_id) - we want to keep the smallest distances
         candidates = []
-        dynamic_list = []
-        
-        # Initialize with entry points
         for ep in entry_points:
-            if ep not in visited:
-                dist = self._calculate_distance(query_idx, ep)
-                heapq.heappush(candidates, (-dist, ep))
-                heapq.heappush(dynamic_list, (dist, ep))
-                visited.add(ep)
-        
+            dist = self._calculate_distance(query_idx, ep)
+            heapq.heappush(candidates, (dist, ep))
+            
+        results = []
+        for ep in entry_points:
+            dist = self._calculate_distance(query_idx, ep)
+            heapq.heappush(results, (-dist, ep)) # Max-heap
+
         while candidates:
-            current_dist, current = heapq.heappop(candidates)
-            current_dist = -current_dist
-            
-            if current_dist > dynamic_list[0][0]:
+            dist, current_node_id = heapq.heappop(candidates)
+
+            # If current candidate is worse than the worst in results, stop
+            if len(results) >= ef and dist > -results[0][0]:
                 break
-            
+
             # Get neighbors at this layer
-            if current in self.nodes:
-                neighbors = self.nodes[current].get_connections(layer)
+            if current_node_id in self.nodes:
+                neighbors = self.nodes[current_node_id].get_connections(layer)
                 
-                for neighbor in neighbors:
-                    if neighbor not in visited:
-                        visited.add(neighbor)
-                        dist = self._calculate_distance(query_idx, neighbor)
+                for neighbor_id in neighbors:
+                    if neighbor_id not in visited:
+                        visited.add(neighbor_id)
+                        neighbor_dist = self._calculate_distance(query_idx, neighbor_id)
                         
-                        if len(dynamic_list) < ef or dist < dynamic_list[0][0]:
-                            heapq.heappush(candidates, (-dist, neighbor))
-                            heapq.heappush(dynamic_list, (dist, neighbor))
-                            
-                            if len(dynamic_list) > ef:
-                                heapq.heappop(dynamic_list)
+                        if len(results) < ef or neighbor_dist < -results[0][0]:
+                            heapq.heappush(candidates, (neighbor_dist, neighbor_id))
+                            heapq.heappush(results, (-neighbor_dist, neighbor_id))
+                            if len(results) > ef:
+                                heapq.heappop(results)
         
-        return sorted(dynamic_list)
-    
+        final_results = sorted([(-d, n) for d, n in results])
+        best_entry_point = {final_results[0][1]} if final_results else entry_points
+        return best_entry_point, final_results
+
     def _calculate_distance(self, idx1: int, idx2: int) -> float:
-        """Calculate distance between two vectors"""
-        
-        if self.vectors is None:
-            return float('inf')
+        """Calculate distance between two vectors based on configured metric."""
+        if self.vectors is None: return float('inf')
         
         try:
             vec1 = self.vectors[idx1]
             vec2 = self.vectors[idx2]
             
-            if self._compiled_l2_distance:
-                dist = float(self._compiled_l2_distance(vec1, vec2.reshape(1, -1))[0])
+            if self.config.metric == 'l2':
+                if self._compiled_l2_distance:
+                    # Reshape for compiled function
+                    dist = float(self._compiled_l2_distance(vec1, vec2.reshape(1, -1))[0])
+                else: # Fallback
+                    dist = float(mx.sum((vec1 - vec2)**2))
+                return dist
+            
+            elif self.config.metric == 'cosine':
+                # For cosine, distance is 1 - similarity. Lower is better.
+                if self._compiled_cosine_similarity:
+                    # Reshape query for matmul compatibility
+                    similarity = float(self._compiled_cosine_similarity(vec1.reshape(1, -1), vec2.reshape(1, -1))[0])
+                else: # Fallback
+                    sim = mx.sum(vec1 * vec2) / (mx.linalg.norm(vec1) * mx.linalg.norm(vec2))
+                    similarity = float(sim)
+                return 1.0 - similarity
+
             else:
-                diff = vec1 - vec2
-                dist = float(mx.sum(diff * diff))
-            
-            return dist
-            
+                raise ValueError(f"Unsupported metric: {self.config.metric}")
+                
         except Exception as e:
-            logger.error(f"Distance calculation failed: {e}")
+            logger.error(f"Distance calculation failed between {idx1} and {idx2}: {e}")
             return float('inf')
     
     def _select_neighbors_heuristic(self, candidates: List[Tuple[float, int]], m: int) -> List[int]:
@@ -1007,37 +1022,14 @@ class ProductionHNSWIndex:
             return [idx for _, idx in candidates]
         
         selected = []
-        candidates_dict = {idx: dist for dist, idx in candidates}
+        # Ensure candidates are sorted by distance
+        sorted_candidates = sorted(candidates)
         
-        # Always select the closest
-        if candidates:
-            closest = candidates[0][1]
-            selected.append(closest)
-            del candidates_dict[closest]
-        
-        # Select diverse neighbors
-        while len(selected) < m and candidates_dict:
-            best_idx = None
-            best_score = -float('inf')
+        for _, idx in sorted_candidates:
+            if len(selected) >= m:
+                break
+            selected.append(idx)
             
-            for idx, dist in candidates_dict.items():
-                # Calculate diversity score
-                if selected:
-                    min_dist_to_selected = min(
-                        self._calculate_distance(idx, sel_idx) for sel_idx in selected
-                    )
-                    score = min_dist_to_selected - dist  # Balance proximity and diversity
-                else:
-                    score = -dist
-                
-                if score > best_score:
-                    best_score = score
-                    best_idx = idx
-            
-            if best_idx is not None:
-                selected.append(best_idx)
-                del candidates_dict[best_idx]
-        
         return selected
     
     def _add_reverse_connection(self, neighbor_idx: int, layer: int, new_idx: int):
@@ -1061,17 +1053,17 @@ class ProductionHNSWIndex:
                 dist = self._calculate_distance(neighbor_idx, conn_idx)
                 distances.append((dist, conn_idx))
             
-            # Select best connections
-            pruned = self._select_neighbors_heuristic(distances, m)
+            # Select best connections (closest)
+            pruned = [idx for _, idx in sorted(distances)[:m]]
             new_connections = np.array(pruned, dtype=np.int32)
         
         neighbor.set_connections(layer, new_connections)
     
     def _get_random_level(self) -> int:
         """Generate random level with exponential decay"""
-        level = 0
-        while random.random() < 0.5 and level < 16:
-            level += 1
+        # Using pre-calculated inverse of log(M) for performance
+        ml = 1 / np.log(self.M) if self.M > 1 else 1.0
+        level = int(-np.log(random.random()) * ml)
         return level
     
     # =================== SEARCH OPERATIONS ===================
@@ -1079,18 +1071,18 @@ class ProductionHNSWIndex:
     def search(self, query: mx.array, k: int, ef: Optional[int] = None) -> Tuple[List[int], List[float]]:
         """Search for k nearest neighbors with adaptive ef"""
         
-        if self.state != IndexState.READY or self.vectors is None:
+        if self.state != IndexState.READY or self.vectors is None or self.vector_count == 0:
             return [], []
         
         start_time = time.time()
         
         # Get current system load for adaptive ef_search
-        current_load = psutil.cpu_percent(interval=0.1) / 100.0
+        current_load = psutil.cpu_percent(interval=None) / 100.0
         base_ef = ef or self.ef_construction // 2
         adaptive_ef = self.adaptive_manager.get_adaptive_ef_search(current_load, base_ef)
         
         try:
-            # Use flat search for small datasets
+            # Use flat search for small datasets or if strategy is flat
             if self.adaptive_manager.current_strategy == IndexStrategy.FLAT:
                 return self._flat_search(query, k)
             
@@ -1103,20 +1095,17 @@ class ProductionHNSWIndex:
                 query = mx.array(query, dtype=mx.float32)
             
             # Search from entry point down
-            current_nearest = {self.entry_point}
             entry_level = self.nodes[self.entry_point].level
+            _, candidates = self._search_layer_query(query, {self.entry_point}, max(adaptive_ef, k), entry_level)
             
-            # Search upper layers
-            for level in range(entry_level, 0, -1):
-                current_nearest = self._search_layer_query(query, current_nearest, 1, level)
-            
-            # Search layer 0 with adaptive ef
-            candidates = self._search_layer_query(query, current_nearest, max(adaptive_ef, k), 0)
+            for level in range(entry_level - 1, -1, -1):
+                entry_points = {idx for _, idx in candidates}
+                _, candidates = self._search_layer_query(query, entry_points, max(adaptive_ef, k), level)
             
             # Extract top k results
-            top_k = candidates[:k]
+            top_k = sorted(candidates)[:k]
             indices = [idx for _, idx in top_k]
-            distances = [dist for dist, idx in top_k]
+            distances = [dist for _, idx in top_k]
             
             # Record performance
             query_time = (time.time() - start_time) * 1000
@@ -1128,45 +1117,48 @@ class ProductionHNSWIndex:
             logger.error(f"Search failed: {e}")
             return [], []
     
-    def _search_layer_query(self, query: mx.array, entry_points: Set[int], ef: int, layer: int) -> List[Tuple[float, int]]:
-        """Search layer optimized for query vectors"""
-        
-        visited = set()
+    def _search_layer_query(self, query: mx.array, entry_points: Set[int], ef: int, layer: int) -> Tuple[Set[int], List[Tuple[float, int]]]:
+        """Search layer optimized for query vectors."""
+        visited = set(entry_points)
         candidates = []
-        dynamic_list = []
-        
-        # Initialize with entry points
         for ep in entry_points:
-            if ep not in visited:
-                dist = self._calculate_distance_query(query, ep)
-                heapq.heappush(candidates, (-dist, ep))
-                heapq.heappush(dynamic_list, (dist, ep))
-                visited.add(ep)
-        
+            dist = self._calculate_distance_query(query, ep)
+            heapq.heappush(candidates, (dist, ep))
+            
+        results = list(candidates)
+        heapq.heapify(results)
+
         while candidates:
-            current_dist, current = heapq.heappop(candidates)
-            current_dist = -current_dist
-            
-            if dynamic_list and current_dist > dynamic_list[0][0]:
-                break
-            
-            # Explore neighbors
-            if current in self.nodes:
-                neighbors = self.nodes[current].get_connections(layer)
+            dist, current_node_id = heapq.heappop(candidates)
+
+            # If current candidate is worse than the worst in results, we can prune
+            if len(results) >= ef and dist > results[0][0]:
+                if self.config.metric == 'l2':
+                    if dist > results[0][0]:
+                        break
+                elif self.config.metric == 'cosine':
+                    if dist > results[0][0]:
+                        break
+
+            # Get neighbors at this layer
+            if current_node_id in self.nodes:
+                neighbors = self.nodes[current_node_id].get_connections(layer)
                 
-                for neighbor in neighbors:
-                    if neighbor not in visited:
-                        visited.add(neighbor)
-                        dist = self._calculate_distance_query(query, neighbor)
+                for neighbor_id in neighbors:
+                    if neighbor_id not in visited:
+                        visited.add(neighbor_id)
+                        neighbor_dist = self._calculate_distance_query(query, neighbor_id)
                         
-                        if len(dynamic_list) < ef or dist < dynamic_list[0][0]:
-                            heapq.heappush(candidates, (-dist, neighbor))
-                            heapq.heappush(dynamic_list, (dist, neighbor))
-                            
-                            if len(dynamic_list) > ef:
-                                heapq.heappop(dynamic_list)
-        
-        return sorted(dynamic_list)
+                        if len(results) < ef or neighbor_dist < results[0][0]:
+                            heapq.heappush(candidates, (neighbor_dist, neighbor_id))
+                            heapq.heappush(results, (neighbor_dist, neighbor_id))
+                            if len(results) > ef:
+                                heapq.heappop(results)
+
+        final_results = sorted(results)
+        best_entry_point = {final_results[0][1]} if final_results else entry_points
+        return best_entry_point, final_results
+
     
     def _calculate_distance_query(self, query: mx.array, vector_idx: int) -> float:
         """Optimized distance calculation for queries"""
@@ -1177,40 +1169,70 @@ class ProductionHNSWIndex:
         try:
             vector = self.vectors[vector_idx]
             
-            if self._compiled_l2_distance:
-                dist = float(self._compiled_l2_distance(query, vector.reshape(1, -1))[0])
-            else:
-                diff = query - vector
-                dist = float(mx.sum(diff * diff))
+            if self.config.metric == 'l2':
+                if self._compiled_l2_distance:
+                    dist = float(self._compiled_l2_distance(query, vector.reshape(1, -1))[0])
+                else: # Fallback
+                    dist = float(mx.sum((query - vector)**2))
+                return dist
             
-            return dist
+            elif self.config.metric == 'cosine':
+                 if self._compiled_cosine_similarity:
+                    # Reshape query for matmul
+                    similarity = float(self._compiled_cosine_similarity(query.reshape(1, -1), vector.reshape(1, -1))[0])
+                 else: # Fallback
+                    sim = mx.sum(query * vector) / (mx.linalg.norm(query) * mx.linalg.norm(vector))
+                    similarity = float(sim)
+                 return 1.0 - similarity # Convert similarity to distance
+                 
+            else:
+                raise ValueError(f"Unsupported metric: {self.config.metric}")
             
         except Exception as e:
-            logger.error(f"Query distance calculation failed: {e}")
+            logger.error(f"Query distance calculation failed for vector {vector_idx}: {e}")
             return float('inf')
     
     def _flat_search(self, query: mx.array, k: int) -> Tuple[List[int], List[float]]:
         """Flat (brute force) search for small datasets"""
         
-        if self.vectors is None:
+        if self.vectors is None or self.vector_count == 0:
             return [], []
         
         try:
             # Batch distance calculation
-            if self._compiled_l2_distance:
-                distances = self._compiled_l2_distance(query, self.vectors)
+            if self.config.metric == 'l2':
+                if self._compiled_l2_distance:
+                    distances = self._compiled_l2_distance(query, self.vectors)
+                else:
+                    diff = self.vectors - query[None, :]
+                    distances = mx.sum(diff * diff, axis=1)
+            elif self.config.metric == 'cosine':
+                if self._compiled_cosine_similarity:
+                    # Similarity is returned, convert to distance
+                    similarities = self._compiled_cosine_similarity(query.reshape(1,-1), self.vectors)
+                    distances = 1.0 - similarities
+                else:
+                    # Manual calculation
+                    query_norm = mx.linalg.norm(query)
+                    vec_norms = mx.linalg.norm(self.vectors, axis=1)
+                    sims = mx.sum(self.vectors * query, axis=1) / (vec_norms * query_norm)
+                    distances = 1.0 - sims
             else:
-                diff = self.vectors - query[None, :]
-                distances = mx.sum(diff * diff, axis=1)
-            
+                raise ValueError(f"Unsupported metric for flat search: {self.config.metric}")
+
             # Get top k
             distances_np = np.array(distances.tolist())
-            top_k_indices = np.argpartition(distances_np, min(k, len(distances_np) - 1))[:k]
-            top_k_indices = top_k_indices[np.argsort(distances_np[top_k_indices])]
+            # Ensure k is not larger than the number of items
+            actual_k = min(k, len(distances_np))
+            if actual_k == 0: return [], []
             
-            top_k_distances = distances_np[top_k_indices].tolist()
+            top_k_indices = np.argpartition(distances_np, actual_k -1)[:actual_k]
+            # Sort the top k results by distance
+            sorted_top_k_indices = top_k_indices[np.argsort(distances_np[top_k_indices])]
             
-            return top_k_indices.tolist(), top_k_distances
+            top_k_distances = distances_np[sorted_top_k_indices].tolist()
+            
+            return sorted_top_k_indices.tolist(), top_k_distances
             
         except Exception as e:
             logger.error(f"Flat search failed: {e}")
@@ -1279,11 +1301,11 @@ class ProductionHNSWIndex:
             
             # Search down to insertion level
             for lc in range(self.nodes[self.entry_point].level, level, -1):
-                current_nearest = self._search_layer(vector_id, current_nearest, 1, lc)
+                current_nearest, _ = self._search_layer(vector_id, current_nearest, 1, lc)
             
             # Insert at each level
             for lc in range(min(level, self.nodes[self.entry_point].level), -1, -1):
-                candidates = self._search_layer(vector_id, current_nearest, self.ef_construction, lc)
+                _, candidates = self._search_layer(vector_id, current_nearest, self.ef_construction, lc)
                 
                 m = self.max_M0 if lc == 0 else self.max_M
                 selected = self._select_neighbors_heuristic(candidates, m)
@@ -1298,7 +1320,7 @@ class ProductionHNSWIndex:
         
         self.nodes[vector_id] = node
         
-        # Update entry point if needed
+        # Update entry point
         if self.entry_point is None or level > self.nodes[self.entry_point].level:
             self.entry_point = vector_id
     
@@ -1572,7 +1594,7 @@ class ProductionHNSWIndex:
         # Vector storage
         vector_memory = 0
         if self.vectors is not None:
-            vector_memory = self.vectors.size * 4  # float32
+            vector_memory = self.vectors.nbytes
         
         # Node storage
         node_memory = sum(node.memory_size() for node in self.nodes.values())
@@ -1671,11 +1693,11 @@ class ProductionHNSWManager:
                 raise ValueError(f"Index {index_id} already exists")
             
             # Create customized config
-            config = AdaptiveHNSWConfig(**self.base_config.__dict__)
+            config_dict = self.base_config.__dict__.copy()
             if config_overrides:
-                for key, value in config_overrides.items():
-                    if hasattr(config, key):
-                        setattr(config, key, value)
+                config_dict.update(config_overrides)
+
+            config = AdaptiveHNSWConfig(**config_dict)
             
             # Create index
             index = ProductionHNSWIndex(dimension, config)
@@ -1903,7 +1925,7 @@ def validate_recall_accuracy(dimension: int = 128, vector_count: int = 1000) -> 
     queries = mx.random.normal((50, dimension), dtype=mx.float32)
     
     # Create HNSW index
-    config = AdaptiveHNSWConfig(auto_tune_parameters=True)
+    config = AdaptiveHNSWConfig(auto_tune_parameters=True, metric='l2') # Use l2 for this test
     index = ProductionHNSWIndex(dimension, config)
     index.build(vectors)
     
@@ -1911,8 +1933,7 @@ def validate_recall_accuracy(dimension: int = 128, vector_count: int = 1000) -> 
     
     for query in queries:
         # Ground truth (brute force)
-        distances_gt = mx.sum((vectors - query[None, :]) ** 2, axis=1)
-        gt_indices = np.argsort(np.array(distances_gt.tolist()))[:10]
+        gt_indices, _ = index._flat_search(query, k=10)
         
         # HNSW result
         hnsw_indices, _ = index.search(query, k=10)

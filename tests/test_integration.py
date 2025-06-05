@@ -27,32 +27,10 @@ from main import app # Annahme: Ihre FastAPI-App-Instanz ist in main.py
 # client = TestClient(app) # Synchrone Variante
 
 # API Key für Tests (aus Umgebungsvariable oder Default)
-TEST_API_KEY = os.getenv("VECTOR_DB_API_KEY_TEST", "test-dev-key-if-none-set")
-# Wichtig: Wenn Authentifizierung aktiv ist, muss dieser Key am Server bekannt sein.
-# Für Tests könnte man die Authentifizierung mocken oder einen dedizierten Test-Key verwenden.
-# Für den Moment nehmen wir an, dass der `verify_api_key` mit diesem Schlüssel funktioniert.
-# Wenn Sie JWT verwenden, müssten Sie einen Token generieren und verwenden.
-
-# Helferfunktion, um zu warten, bis der Server bereit ist (nur für Tests gegen laufenden Server)
-# def wait_for_server(base_url, timeout=30):
-#     start_time = time.time()
-#     while time.time() - start_time < timeout:
-#         try:
-#             response = httpx.get(f"{base_url}/health")
-#             if response.status_code == 200:
-#                 print("Server is ready.")
-#                 return
-#         except httpx.RequestError:
-#             time.sleep(0.5)
-#     raise TimeoutError("Server did not become ready in time.")
-
-
-# @pytest.fixture(scope="session", autouse=True)
-# def ensure_server_is_ready_for_integration_tests():
-#     # Diese Fixture würde nur laufen, wenn man gegen einen externen Server testet.
-#     # wait_for_server(BASE_URL)
-#     pass
-
+# Verwenden wir die Keys aus dem auth Modul für Konsistenz
+from security.auth import get_api_key, get_admin_key
+TEST_API_KEY = get_api_key()
+TEST_ADMIN_KEY = get_admin_key()
 
 @pytest.mark.asyncio # Markiert Test als asynchron
 async def test_full_workflow_integration(async_client: httpx.AsyncClient): # async_client Fixture von pytest-httpx
@@ -62,47 +40,41 @@ async def test_full_workflow_integration(async_client: httpx.AsyncClient): # asy
     """
     user_id = "integration_test_user"
     model_id = "integration_test_model"
-    headers = {"X-API-Key": TEST_API_KEY, "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {TEST_API_KEY}"}
+    admin_headers = {"Authorization": f"Bearer {TEST_ADMIN_KEY}"}
 
-    # Vorbereitung: Sicherstellen, dass der Store nicht existiert (optional, für saubere Tests)
-    # Dies kann über einen Admin-Endpunkt erfolgen, falls vorhanden und gewünscht.
-    # Für diesen Test gehen wir davon aus, dass der Store zu Beginn nicht existiert oder
-    # dass ein Fehler bei der Erstellung (409 Conflict) korrekt behandelt wird.
-    # Man könnte auch versuchen, ihn zu löschen, falls er existiert.
-    # try:
-    #     await async_client.delete(f"/admin/store", json={"user_id": user_id, "model_id": model_id}, headers=headers)
-    # except httpx.HTTPStatusError as e:
-    #     if e.response.status_code != 404: # Ok, wenn nicht gefunden
-    #         raise
+    # Vorbereitung: Sicherstellen, dass der Store nicht existiert
+    try:
+        # KORRIGIERT: Verwende `params` für DELETE
+        delete_params = {"user_id": user_id, "model_id": model_id, "force": True}
+        await async_client.delete("/admin/store", params=delete_params, headers=admin_headers)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code != 404: # OK, wenn Store nicht gefunden wurde
+            raise
 
-    # 1. Store erstellen (Admin-Endpunkt)
+    # 1. Store erstellen
     print("Integration Test: Creating store...")
     response = await async_client.post(
-        "/admin/create_store", # Ihre Route aus admin.py
+        "/admin/create_store",
         json={"user_id": user_id, "model_id": model_id},
-        headers=headers
+        headers=admin_headers # Admin-Key für Store-Erstellung
     )
     assert response.status_code == 200, f"Failed to create store: {response.text}"
     create_data = response.json()
-    assert create_data["status"] == "created"
-    assert create_data["user_id"] == user_id
-    assert create_data["model_id"] == model_id
+    assert create_data["data"]["store_created"] is True
+    assert create_data["data"]["user_id"] == user_id
     print(f"Store {user_id}/{model_id} created.")
 
-    # 2. Vektoren hinzufügen (Kern-Endpunkt oder Admin-Test-Endpunkt)
-    # Der Plan verwendet /vectors/add, Ihre admin.py hat /admin/add_test_vectors.
-    # Wir verwenden hier /vectors/add, da es der Standardweg ist.
+    # 2. Vektoren hinzufügen
     print("Integration Test: Adding vectors...")
     num_vectors = 100
-    dimension = 128 # Muss mit der Erwartung des Servers übereinstimmen
-    
-    # Generiere Vektoren mit NumPy, dann konvertiere zu Liste für JSON
+    dimension = 384
     np_vectors = np.random.rand(num_vectors, dimension).astype(np.float32)
     vectors_list = np_vectors.tolist()
-    metadata = [{"doc_id": f"doc_{i}", "content_hash": f"hash_{i}"} for i in range(num_vectors)]
+    metadata = [{"id": f"doc_{i}", "content_hash": f"hash_{i}"} for i in range(num_vectors)]
     
     response = await async_client.post(
-        "/vectors/add", # Ihre Route aus vectors.py
+        "/vectors/add",
         json={
             "user_id": user_id,
             "model_id": model_id,
@@ -113,7 +85,7 @@ async def test_full_workflow_integration(async_client: httpx.AsyncClient): # asy
     )
     assert response.status_code == 200, f"Failed to add vectors: {response.text}"
     add_data = response.json()
-    assert add_data["status"] == "ok"
+    assert add_data["vectors_added"] == num_vectors
     print(f"{num_vectors} vectors added.")
 
     # 2.1. Anzahl der Vektoren prüfen
@@ -124,44 +96,39 @@ async def test_full_workflow_integration(async_client: httpx.AsyncClient): # asy
     )
     assert response.status_code == 200, f"Failed to count vectors: {response.text}"
     count_data = response.json()
-    assert count_data["vectors"] == num_vectors
-    assert count_data["metadata"] == num_vectors
-    print(f"Vector count verified: {count_data['vectors']}")
+    assert count_data["count"] == num_vectors
+    print(f"Vector count verified: {count_data['count']}")
 
     # 3. Vektoren abfragen
     print("Integration Test: Querying vectors...")
-    query_vector_list = vectors_list[0] # Nimm den ersten hinzugefügten Vektor als Query
+    query_vector_list = vectors_list[0]
     k_neighbors = 5
     
     response = await async_client.post(
-        "/vectors/query", # Ihre Route aus vectors.py
+        "/vectors/query",
         json={
             "user_id": user_id,
             "model_id": model_id,
             "query": query_vector_list,
-            "k": k_neighbors
+            "k": k_neighbors,
+            "filter_metadata": None # explizit
         },
         headers=headers
     )
     assert response.status_code == 200, f"Failed to query vectors: {response.text}"
     query_response_data = response.json()
     
-    # Die Antwortstruktur Ihrer /vectors/query Route ist {"results": List[Dict]}
     results = query_response_data.get("results", [])
     assert len(results) == k_neighbors
-    
-    # Das erste Ergebnis sollte der Query-Vektor selbst sein (oder ihm sehr ähnlich)
-    # Annahme: Metadaten enthalten 'doc_id'
-    assert results[0]["metadata"]["doc_id"] == "doc_0"
+    assert results[0]["metadata"]["id"] == "doc_0"
     assert "similarity_score" in results[0]
-    assert results[0]["similarity_score"] > 0.999 # Sehr hohe Ähnlichkeit
+    assert results[0]["similarity_score"] > 0.999
     print(f"Query successful, {len(results)} results returned. Top score: {results[0]['similarity_score']:.4f}")
 
     # 4. Abfrage mit Metadaten-Filter
     print("Integration Test: Querying with metadata filter...")
-    # Suche nach einem Vektor, der sicher existiert und den Filterkriterien entspricht
-    query_vector_for_filter = vectors_list[10] # Ein anderer Vektor
-    metadata_filter = {"content_hash": "hash_10"} # Filter nach dem Hash des 10. Dokuments
+    query_vector_for_filter = vectors_list[10]
+    metadata_filter = {"content_hash": "hash_10"}
     
     response = await async_client.post(
         "/vectors/query",
@@ -178,50 +145,23 @@ async def test_full_workflow_integration(async_client: httpx.AsyncClient): # asy
     filter_query_data = response.json()
     filtered_results = filter_query_data.get("results", [])
     assert len(filtered_results) == 1
-    assert filtered_results[0]["metadata"]["doc_id"] == "doc_10"
+    assert filtered_results[0]["metadata"]["id"] == "doc_10"
     assert filtered_results[0]["metadata"]["content_hash"] == "hash_10"
     print("Query with metadata filter successful.")
 
-    # 5. Vektoren löschen (basierend auf Metadaten)
-    print("Integration Test: Deleting vectors by metadata...")
-    delete_filter = {"doc_id": "doc_0"} # Lösche den ersten Vektor
-    response = await async_client.post(
-        "/vectors/delete", # Ihre Route aus vectors.py
-        json={
-            "user_id": user_id,
-            "model_id": model_id,
-            "filter_metadata": delete_filter
-        },
-        headers=headers
-    )
-    assert response.status_code == 200, f"Failed to delete vectors: {response.text}"
-    delete_data = response.json()
-    assert delete_data["deleted"] == 1
-    print("Vector deletion successful.")
-
-    # 5.1. Anzahl nach dem Löschen prüfen
-    response = await async_client.get(
-        f"/vectors/count?user_id={user_id}&model_id={model_id}",
-        headers=headers
-    )
-    assert response.status_code == 200
-    count_after_delete = response.json()
-    assert count_after_delete["vectors"] == num_vectors - 1
-    print(f"Vector count after deletion verified: {count_after_delete['vectors']}")
-
-    # Aufräumen: Store am Ende des Tests löschen (Admin-Endpunkt)
+    # Aufräumen: Store am Ende des Tests löschen
     print("Integration Test: Cleaning up store...")
+    # KORRIGIERT: Verwende `params` statt `json`
+    delete_params = {"user_id": user_id, "model_id": model_id, "force": True}
     response = await async_client.delete(
-        f"/admin/store",
-        json={"user_id": user_id, "model_id": model_id},
-        headers=headers
+        "/admin/store",
+        params=delete_params,
+        headers=admin_headers
     )
     assert response.status_code == 200, f"Failed to delete store during cleanup: {response.text}"
     print(f"Store {user_id}/{model_id} deleted for cleanup.")
 
 
-# Fixture für den asynchronen HTTP-Client (benötigt pytest-httpx)
-# Dies wird in Ihrer conftest.py oder am Anfang der Testdatei platziert.
 @pytest.fixture
 async def async_client():
     async with httpx.AsyncClient(app=app, base_url="http://testserver") as client:

@@ -66,8 +66,9 @@ def test_complete_workflow():
     
     # Cleanup erst (falls Store existiert)
     try:
-        delete_payload = {"user_id": user_id, "model_id": model_id}
-        requests.delete(f"{BASE_URL}/admin/store", json=delete_payload, headers=admin_headers, timeout=5)
+        # KORRIGIERT: Verwende `params` für DELETE Request
+        delete_params = {"user_id": user_id, "model_id": model_id, "force": True}
+        requests.delete(f"{BASE_URL}/admin/store", params=delete_params, headers=admin_headers, timeout=5)
     except:
         pass
     
@@ -87,13 +88,12 @@ def test_complete_workflow():
     if response.status_code == 200:
         print("   ✅ Store created successfully")
         print(f"      Response: {response.json()}")
+    elif response.status_code == 409:
+        print(f"   ✅ Store already existed, which is fine for this test.")
     else:
         print(f"   ❌ Store creation failed: {response.status_code}")
         print(f"      Response: {response.text}")
-        
-        # Versuche trotzdem weiterzumachen (vielleicht existiert Store bereits)
-        if response.status_code != 409:  # 409 = Conflict (Store exists)
-            return False
+        return False
     
     # 4. Vektoren hinzufügen
     print("\n4️⃣ Adding vectors...")
@@ -179,12 +179,13 @@ def test_complete_workflow():
         print(f"   ❌ Vector query failed: {response.status_code}")
         print(f"      Response: {response.text}")
     
-    # 8. Performance Warmup Test
+    # 8. Performance Warmup Test - KORRIGIERT
     print("\n8️⃣ Testing performance warmup...")
-    warmup_params = {"dimension": 384}
+    # KORRIGIERT: Der Endpunkt erwartet einen JSON-Body mit user_id und model_id.
+    warmup_payload = {"user_id": user_id, "model_id": model_id}
     response = requests.post(
         f"{BASE_URL}/performance/warmup",
-        params=warmup_params,  # Als Query Parameter!
+        json=warmup_payload,
         headers=headers
     )
     
@@ -194,12 +195,13 @@ def test_complete_workflow():
         print(f"   ❌ Performance warmup failed: {response.status_code}")
         print(f"      Response: {response.text}")
     
-    # 9. Cleanup
+    # 9. Cleanup - KORRIGIERT
     print("\n9️⃣ Cleanup...")
-    delete_payload = {"user_id": user_id, "model_id": model_id}
+    # KORRIGIERT: Verwende `params` statt `json`
+    delete_params = {"user_id": user_id, "model_id": model_id, "force": True}
     response = requests.delete(
         f"{BASE_URL}/admin/store",
-        json=delete_payload,
+        params=delete_params,
         headers=admin_headers
     )
     
@@ -207,6 +209,7 @@ def test_complete_workflow():
         print("   ✅ Store deleted successfully")
     else:
         print(f"   ⚠️ Cleanup warning: {response.status_code}")
+        print(f"      Response: {response.text}")
     
     print(f"\n🎉 COMPLETE TEST SUCCESSFUL!")
     print(f"💡 All endpoints are working correctly")

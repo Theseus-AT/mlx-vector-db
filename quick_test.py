@@ -142,9 +142,9 @@ def test_with_auth():
     model_id = "test_model"
     
     try:
-        # Erst versuchen zu löschen (falls vorhanden)
-        delete_payload = {"user_id": user_id, "model_id": model_id}
-        requests.delete(f"{BASE_URL}/admin/store", json=delete_payload, headers=admin_headers)
+        # Erst versuchen zu löschen (falls vorhanden) - KORRIGIERT
+        delete_params = {"user_id": user_id, "model_id": model_id, "force": True}
+        requests.delete(f"{BASE_URL}/admin/store", params=delete_params, headers=admin_headers, timeout=5)
         
         # Store erstellen
         create_payload = {"user_id": user_id, "model_id": model_id}
@@ -156,6 +156,8 @@ def test_with_auth():
                 print(f"   ✅ Store created: {result['data'].get('store_created', True)}")
             else:
                 print(f"   ✅ Store created successfully")
+        elif response.status_code == 409:
+             print(f"   ✅ Store already existed, continuing test.")
         else:
             print(f"   ❌ Store creation failed: {response.status_code}")
             print(f"   Response: {response.text}")
@@ -233,13 +235,15 @@ def test_with_auth():
     # 7. Cleanup
     print("\n7️⃣ Cleanup...")
     try:
-        delete_payload = {"user_id": user_id, "model_id": model_id}
-        response = requests.delete(f"{BASE_URL}/admin/store", json=delete_payload, headers=admin_headers, timeout=10)
+        # KORRIGIERT: Verwende `params` statt `json` für den DELETE-Request
+        delete_params = {"user_id": user_id, "model_id": model_id, "force": True}
+        response = requests.delete(f"{BASE_URL}/admin/store", params=delete_params, headers=admin_headers, timeout=10)
         
         if response.status_code == 200:
             print("   ✅ Test store deleted")
         else:
             print(f"   ⚠️ Cleanup warning: {response.status_code}")
+            print(f"      Response: {response.text}")
     except Exception as e:
         print(f"   ⚠️ Cleanup error: {e}")
     
@@ -273,3 +277,36 @@ if __name__ == "__main__":
             print("   python debug_api_keys.py")
     else:
         print("Cannot run tests - server not available")
+
+# quick_test.py
+
+# ... (andere Funktionen) ...
+
+def test_with_auth():
+    # ... (Setup) ...
+
+    # 3. Store erstellen (Admin-Endpunkt)
+    print("\n3️⃣ Creating test store...")
+    user_id = "test_user"
+    model_id = "test_model"
+    
+    try:
+        # Erst versuchen zu löschen (falls vorhanden)
+        delete_params = {"user_id": user_id, "model_id": model_id, "force": True}
+        requests.delete(f"{BASE_URL}/admin/store", params=delete_params, headers=admin_headers)
+        
+        # KORRIGIERT: Payload enthält jetzt die erforderliche 'dimension'
+        create_payload = {
+            "user_id": user_id, 
+            "model_id": model_id,
+            "dimension": 384  # Standard-Dimension für den Test
+        }
+        response = requests.post(f"{BASE_URL}/admin/create_store", json=create_payload, headers=admin_headers, timeout=10)
+        
+        if response.status_code == 200:
+            result = response.json()
+            if "data" in result:
+                print(f"   ✅ Store created: {result['data'].get('store_created', True)}")
+            else:
+                print(f"   ✅ Store created successfully")
+        # ... (Rest der Funktion)

@@ -24,19 +24,21 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 import threading
 
+# KORRIGIERT: Logger wird am Anfang initialisiert
+logger = logging.getLogger("mlx_lm_integration")
+
 # MLX-LM Imports (wenn verfügbar)
 try:
     from mlx_lm import load, generate
     from mlx_lm.utils import load_config
-    from mlx_lm.models import ModelType
+    # KORRIGIERT: 'ModelType' ist kein gültiger Export aus mlx_lm.models und wird entfernt.
+    # from mlx_lm.models import ModelType 
     MLX_LM_AVAILABLE = True
 except ImportError:
     MLX_LM_AVAILABLE = False
     logger.warning("MLX-LM not available. Install with: pip install mlx-lm")
 
 from service.optimized_vector_store import MLXVectorStore
-
-logger = logging.getLogger("mlx_lm_integration")
 
 # =================== MODEL CONFIGURATIONS ===================
 
@@ -51,6 +53,9 @@ class EmbeddingModelConfig:
     quantization: Optional[str] = None  # "4bit", "8bit", None
     trust_remote_code: bool = False
     device_memory_fraction: float = 0.8
+
+# ... (Rest der Datei bleibt unverändert) ...
+# (Fügen Sie hier den Rest Ihrer integrations/mlx_lm_pipeline.py Datei ein)
 
 # Vorkonfigurierte Modelle
 SUPPORTED_EMBEDDING_MODELS = {

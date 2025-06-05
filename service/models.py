@@ -24,24 +24,10 @@ class IndexType(str, Enum):
 
 class VectorAddRequest(BaseModel):
     """Request model for adding vectors"""
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "vectors": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]],
-            "metadata": [
-                {"id": "doc1", "text": "Hello world"},
-                {"id": "doc2", "text": "Another document"}
-            ]
-        }
-    })
-    
-    vectors: List[List[float]] = Field(
-        ...,
-        description="List of vectors to add"
-    )
-    metadata: List[Dict[str, Any]] = Field(
-        ...,
-        description="Metadata for each vector"
-    )
+    user_id: str
+    model_id: str
+    vectors: List[List[float]] = Field(..., description="List of vectors to add")
+    metadata: List[Dict[str, Any]] = Field(..., description="Metadata for each vector")
     
     @field_validator('vectors', 'metadata')
     @classmethod
@@ -54,85 +40,38 @@ class VectorAddRequest(BaseModel):
 
 class VectorQuery(BaseModel):
     """Request model for vector similarity search"""
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "vector": [0.1, 0.2, 0.3],
-            "k": 10,
-            "filter": {"category": "science"}
-        }
-    })
-    
-    vector: List[float] = Field(
-        ...,
-        description="Query vector"
-    )
-    k: int = Field(
-        default=10,
-        ge=1,
-        le=1000,
-        description="Number of results to return"
-    )
-    filter: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="Metadata filter"
-    )
+    user_id: str
+    model_id: str
+    query: List[float] = Field(..., description="Query vector")
+    k: int = Field(default=10, ge=1, le=1000)
+    filter_metadata: Optional[Dict[str, Any]] = Field(default=None, description="Metadata filter")
 
 
 class BatchQueryRequest(BaseModel):
     """Request model for batch queries"""
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "queries": [
-                {"vector": [0.1, 0.2, 0.3], "k": 5},
-                {"vector": [0.4, 0.5, 0.6], "k": 10}
-            ]
-        }
-    })
-    
-    queries: List[VectorQuery] = Field(
-        ...,
-        description="List of queries to process"
-    )
+    user_id: str
+    model_id: str
+    queries: List[List[float]]
+    k: int = 10
 
 
 class SearchResult(BaseModel):
     """Single search result"""
-    metadata: Dict[str, Any] = Field(
-        ...,
-        description="Metadata of the matched vector"
-    )
-    score: float = Field(
-        ...,
-        description="Similarity score"
-    )
-    index: Optional[int] = Field(
-        default=None,
-        description="Index in the vector store"
-    )
+    metadata: Dict[str, Any]
+    score: float
+    index: Optional[int] = None
 
 
 class QueryResponse(BaseModel):
     """Response model for vector queries"""
-    results: List[SearchResult] = Field(
-        ...,
-        description="Search results"
-    )
-    query_time_ms: float = Field(
-        ...,
-        description="Query execution time in milliseconds"
-    )
+    results: List[SearchResult]
+    query_time_ms: float
 
 
 class BatchQueryResponse(BaseModel):
     """Response model for batch queries"""
-    results: List[QueryResponse] = Field(
-        ...,
-        description="Results for each query"
-    )
-    total_time_ms: float = Field(
-        ...,
-        description="Total batch processing time"
-    )
+    results: List[QueryResponse]
+    total_time_ms: float
 
 
 class VectorStoreInfo(BaseModel):
@@ -148,172 +87,90 @@ class VectorStoreInfo(BaseModel):
 
 class VectorStoreConfig(BaseModel):
     """Configuration for creating a vector store"""
-    name: str = Field(
-        ...,
-        pattern="^[a-zA-Z0-9_-]+$",
-        description="Store name (alphanumeric, underscores, hyphens)"
-    )
-    dimension: int = Field(
-        ...,
-        ge=1,
-        le=4096,
-        description="Vector dimension"
-    )
-    metric: MetricType = Field(
-        default=MetricType.COSINE,
-        description="Similarity metric"
-    )
-    index_type: IndexType = Field(
-        default=IndexType.FLAT,
-        description="Index type"
-    )
-    metadata: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Additional store metadata"
-    )
+    name: str = Field(..., pattern="^[a-zA-Z0-9_-]+$")
+    dimension: int = Field(..., ge=1, le=4096)
+    metric: MetricType = Field(default=MetricType.COSINE)
+    index_type: IndexType = Field(default=IndexType.FLAT)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class DeleteVectorsRequest(BaseModel):
     """Request model for deleting vectors"""
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "indices": [0, 1, 2],
-            "filter": {"category": "outdated"}
-        }
-    })
-    
-    indices: Optional[List[int]] = Field(
-        default=None,
-        description="Indices of vectors to delete"
-    )
-    filter: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="Delete vectors matching this metadata filter"
-    )
+    indices: Optional[List[int]] = None
+    filter: Optional[Dict[str, Any]] = None
 
 
 class DeleteVectorsResponse(BaseModel):
     """Response model for delete operations"""
-    deleted_count: int = Field(
-        ...,
-        description="Number of vectors deleted"
-    )
-    remaining_count: int = Field(
-        ...,
-        description="Number of vectors remaining in store"
-    )
+    deleted_count: int
+    remaining_count: int
 
 
 class OptimizeRequest(BaseModel):
     """Request model for optimization operations"""
-    rebuild_index: bool = Field(
-        default=True,
-        description="Whether to rebuild the index"
-    )
-    compact_storage: bool = Field(
-        default=True,
-        description="Whether to compact storage"
-    )
+    rebuild_index: bool = True
+    compact_storage: bool = True
 
 
+# KORRIGIERT: Dieses Modell wurde an die tatsächliche Verwendung angepasst.
+# Es verwendet jetzt user_id und model_id anstelle von 'name'.
 class CreateStoreRequest(BaseModel):
     """Request model for creating a new vector store"""
     model_config = ConfigDict(json_schema_extra={
         "example": {
-            "name": "my_store",
+            "user_id": "my_user",
+            "model_id": "my_model",
             "dimension": 384,
             "metric": "cosine"
         }
     })
     
-    name: str = Field(
-        ...,
-        pattern="^[a-zA-Z0-9_-]+$",
-        description="Store name (alphanumeric, underscores, hyphens)"
-    )
-    dimension: int = Field(
-        ...,
-        ge=1,
-        le=4096,
-        description="Vector dimension"
-    )
-    metric: MetricType = Field(
-        default=MetricType.COSINE,
-        description="Similarity metric"
-    )
+    user_id: str = Field(..., description="User ID for the store")
+    model_id: str = Field(..., description="Model ID for the store")
+    dimension: int = Field(..., ge=1, le=4096, description="Vector dimension")
+    metric: MetricType = Field(default=MetricType.COSINE, description="Similarity metric")
+    config: Optional[Dict[str, Any]] = Field(default=None, description="Advanced store configuration")
 
 
 class CreateStoreResponse(BaseModel):
     """Response model for store creation"""
-    name: str
-    message: str
-    config: VectorStoreConfig
+    status: str
+    data: Dict[str, Any]
 
 
 class ExportRequest(BaseModel):
     """Request model for exporting store data"""
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "format": "npz",
-            "include_metadata": True
-        }
-    })
-    
-    format: str = Field(
-        default="npz",
-        pattern="^(npz|json|parquet)$",
-        description="Export format"
-    )
-    include_metadata: bool = Field(
-        default=True,
-        description="Whether to include metadata"
-    )
+    user_id: str
+    model_id: str
+    format: str = Field(default="npz", pattern="^(npz|json|parquet)$")
+    include_metadata: bool = True
+    compression_level: int = Field(default=zipfile.ZIP_DEFLATED, ge=0, le=9)
 
 
 class ImportRequest(BaseModel):
     """Request model for importing store data"""
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "source_path": "/path/to/data.npz",
-            "format": "npz",
-            "merge": False
-        }
-    })
-    
-    source_path: str = Field(
-        ...,
-        description="Path to import data from"
-    )
-    format: str = Field(
-        default="npz",
-        pattern="^(npz|json|parquet)$",
-        description="Import format"
-    )
-    merge: bool = Field(
-        default=False,
-        description="Whether to merge with existing data"
-    )
+    user_id: str
+    model_id: str
+    format: str = Field(default="npz", pattern="^(npz|json|parquet)$")
+    overwrite_existing: bool = False
 
 
 class ExportResponse(BaseModel):
-    """Response model for export operations"""
-    message: str
+    success: bool
     export_path: str
-    format: str
-    vectors_exported: int
     file_size_mb: float
-
+    vectors_exported: int
+    export_time_ms: float
 
 class ImportResponse(BaseModel):
-    """Response model for import operations"""
-    message: str
+    success: bool
     vectors_imported: int
-    format: str
-    merge_mode: bool
+    metadata_imported: int
+    import_time_ms: float
+    store_recreated: bool
 
 
 class BackupResponse(BaseModel):
-    """Response model for backup operations"""
     message: str
     backup_path: str
     backup_size_mb: float
@@ -321,38 +178,22 @@ class BackupResponse(BaseModel):
 
 
 class RestoreResponse(BaseModel):
-    """Response model for restore operations"""
     message: str
     vectors_restored: int
     restore_time_ms: float
 
 
 class BackupRequest(BaseModel):
-    """Request model for backup operations"""
-    destination_path: Optional[str] = Field(
-        default=None,
-        description="Backup destination path"
-    )
-    compress: bool = Field(
-        default=True,
-        description="Whether to compress backup"
-    )
+    destination_path: Optional[str] = None
+    compress: bool = True
 
 
 class RestoreRequest(BaseModel):
-    """Request model for restore operations"""
-    backup_path: str = Field(
-        ...,
-        description="Path to backup file"
-    )
-    overwrite: bool = Field(
-        default=False,
-        description="Whether to overwrite existing data"
-    )
+    backup_path: str
+    overwrite: bool = False
 
 
 class StoreStatsResponse(BaseModel):
-    """Response model for store statistics"""
     name: str
     vector_count: int
     dimension: int
@@ -364,160 +205,38 @@ class StoreStatsResponse(BaseModel):
 
 
 class OptimizeResponse(BaseModel):
-    """Response model for optimization operations"""
     message: str
     optimization_time_ms: float
     vectors_optimized: int
 
 
 class StoreListResponse(BaseModel):
-    """Response model for listing stores"""
-    stores: List[VectorStoreInfo] = Field(
-        ...,
-        description="List of available stores"
-    )
-    total_memory_mb: float = Field(
-        ...,
-        description="Total memory usage across all stores"
-    )
+    stores: List[VectorStoreInfo]
+    total_memory_mb: float
 
 
 class HealthResponse(BaseModel):
-    """Health check response"""
-    status: str = Field(
-        default="healthy",
-        description="Service health status"
-    )
-    mlx_version: str = Field(
-        ...,
-        description="MLX version"
-    )
-    metal_available: bool = Field(
-        ...,
-        description="Whether Metal acceleration is available"
-    )
-    stores_count: int = Field(
-        ...,
-        description="Number of active stores"
-    )
-    uptime_seconds: float = Field(
-        ...,
-        description="Service uptime in seconds"
-    )
+    status: str = "healthy"
+    mlx_version: str
+    metal_available: bool
+    stores_count: int
+    uptime_seconds: float
 
 
 class BenchmarkRequest(BaseModel):
-    """Request model for performance benchmarking"""
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "user_id": "benchmark_user",
-            "model_id": "benchmark_model",
-            "num_vectors": 1000,
-            "num_queries": 100
-        }
-    })
-    
-    user_id: str = Field(
-        ...,
-        description="User ID for the benchmark"
-    )
-    model_id: str = Field(
-        ...,
-        description="Model ID for the benchmark"
-    )
-    num_vectors: int = Field(
-        default=1000,
-        ge=1,
-        le=1000000,
-        description="Number of vectors to test with"
-    )
-    num_queries: int = Field(
-        default=100,
-        ge=1,
-        le=10000,
-        description="Number of queries to run"
-    )
+    user_id: str
+    model_id: str
+    num_vectors: int = Field(default=1000, ge=1, le=1000000)
+    num_queries: int = Field(default=100, ge=1, le=10000)
 
 
 class BenchmarkResponse(BaseModel):
-    """Response model for performance benchmarking"""
-    benchmark_results: Dict[str, Any] = Field(
-        ...,
-        description="Benchmark results including metrics"
-    )
-    mlx_optimized: bool = Field(
-        default=True,
-        description="Whether MLX optimizations were used"
-    )
-    performance_target: str = Field(
-        default="1000+ QPS",
-        description="Performance target description"
-    )
+    benchmark_results: Dict[str, Any]
+    mlx_optimized: bool = True
+    performance_target: str = "1000+ QPS"
 
 
 class ErrorResponse(BaseModel):
-    """Error response model"""
-    error: str = Field(
-        ...,
-        description="Error message"
-    )
-    detail: Optional[str] = Field(
-        default=None,
-        description="Detailed error information"
-    )
-    code: Optional[str] = Field(
-        default=None,
-        description="Error code"
-    )
-
-
-# Validation utilities
-def validate_vector_dimension(vector: List[float], expected_dim: int) -> bool:
-    """Validate vector dimension"""
-    return len(vector) == expected_dim
-
-
-def validate_vectors_batch(vectors: List[List[float]]) -> bool:
-    """Validate a batch of vectors have consistent dimensions"""
-    if not vectors:
-        return True
-    
-    dim = len(vectors[0])
-    return all(len(v) == dim for v in vectors)
-
-
-# Export all models
-__all__ = [
-    'MetricType',
-    'IndexType',
-    'VectorAddRequest',
-    'VectorQuery',
-    'BatchQueryRequest',
-    'SearchResult',
-    'QueryResponse',
-    'BatchQueryResponse',
-    'VectorStoreInfo',
-    'VectorStoreConfig',
-    'CreateStoreRequest',
-    'CreateStoreResponse',
-    'StoreStatsResponse',
-    'OptimizeResponse',
-    'DeleteVectorsRequest',
-    'DeleteVectorsResponse',
-    'OptimizeRequest',
-    'StoreListResponse',
-    'HealthResponse',
-    'ErrorResponse',
-    'ExportRequest',
-    'ExportResponse',
-    'ImportRequest',
-    'ImportResponse',
-    'BackupRequest',
-    'BackupResponse',
-    'RestoreRequest',
-    'RestoreResponse',
-    'BenchmarkRequest',
-    'BenchmarkResponse',
-    'validate_vector_dimension',
-    'validate_vectors_batch'
-]
+    error: str
+    detail: Optional[str] = None
+    code: Optional[str] = None

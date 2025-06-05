@@ -22,6 +22,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 DEMO_BASE_PATH = Path("~/.mlx_vector_db_demo_stores").expanduser()
 DEMO_BASE_PATH.mkdir(parents=True, exist_ok=True)
 
+# KORRIGIERT: Der 'metric'-Parameter wurde aus der HNSW-Konfiguration entfernt,
+# da dieser von der VectorStore-Konfiguration geerbt werden sollte.
 demo_vs_config = MLXVectorStoreConfig(
     dimension=384,
     metric="cosine",
@@ -29,17 +31,17 @@ demo_vs_config = MLXVectorStoreConfig(
     hnsw_config=AdaptiveHNSWConfig(
         M=16,
         ef_construction=100,
-        ef_search=50,
-        metric='l2'
+        ef_search=50
     )
 )
 
-def get_demo_store(user_id: str, model_id: str) -> VectorStore:  # KORRIGIERT: Rückgabetyp
+def get_demo_store(user_id: str, model_id: str) -> VectorStore:
     """Hilfsfunktion zum Erstellen/Abrufen einer VectorStore-Instanz für Demos."""
     store_path = DEMO_BASE_PATH / f"user_{user_id}" / model_id
-    return VectorStore(store_path, config=demo_vs_config)
+    # Stelle sicher, dass die Konfiguration übergeben wird, falls der Store neu erstellt wird.
+    return VectorStore(str(store_path), config=demo_vs_config)
 
-def cleanup_store(store: VectorStore):  # KORRIGIERT: Parameter-Typ
+def cleanup_store(store: VectorStore):
     """Bereinigt einen Store und löscht sein Verzeichnis."""
     store_path_to_delete = store.store_path
     try:
@@ -65,7 +67,7 @@ def run_basic_demo():
 
     # Vektoren hinzufügen
     print(f"➕ Füge Beispiel-Vektoren hinzu...")
-    vecs_np = np.random.rand(5, store.dimension or 384).astype(np.float32)
+    vecs_np = np.random.rand(5, store.config.dimension).astype(np.float32)
     meta = [{"id": f"chunk_{i}", "source": "demo", "content": f"Sample content {i}"} for i in range(vecs_np.shape[0])]
     
     start_time = time.time()
@@ -101,26 +103,34 @@ def run_basic_demo():
 
     # Store-Statistiken
     print(f"📊 Store-Statistiken:")
-    stats = store.get_stats()
+    stats = store.get_comprehensive_stats()
     print(f"   Vektoren: {stats.get('vector_count', 0)}")
     print(f"   Dimension: {stats.get('dimension', 'N/A')}")
 
     # Vektor löschen
     print(f"🗑️ Lösche Vektor mit id 'chunk_1'...")
+    # Diese Logik zum Löschen ist unsicher, wenn Metadaten nicht eindeutig sind.
+    # Für eine Demo ist es aber in Ordnung.
     idx_to_delete = -1
-    for i, m in enumerate(store.metadata):
-        if m.get("id") == "chunk_1":
-            idx_to_delete = i
-            break
+    if store._metadata:
+      for i, m in enumerate(store._metadata):
+          if m.get("id") == "chunk_1":
+              idx_to_delete = i
+              break
     
     if idx_to_delete != -1:
-        deleted_count = store.delete_vectors([idx_to_delete])
-        print(f"   {deleted_count} Vektor(en) gelöscht.")
+        # Die delete_vectors-Methode muss in der Store-Klasse existieren.
+        # Wir nehmen an, sie existiert und erwartet eine Liste von Indizes.
+        if hasattr(store, 'delete_vectors'):
+            deleted_count = store.delete_vectors([idx_to_delete])
+            print(f"   {deleted_count} Vektor(en) gelöscht.")
+        else:
+            print("   Löschfunktion 'delete_vectors' nicht im Store implementiert.")
     else:
         print(f"   Vektor mit id 'chunk_1' nicht gefunden.")
 
     # Finale Statistiken
-    final_stats = store.get_stats()
+    final_stats = store.get_comprehensive_stats()
     print(f"📊 Finale Statistiken:")
     print(f"   Vektoren: {final_stats.get('vector_count', 0)}")
 
@@ -138,7 +148,7 @@ def run_performance_demo_local():
     store = get_demo_store(user_id, model_id)
 
     sizes = [100, 500, 1000]
-    dim = store.dimension or 384
+    dim = store.config.dimension
 
     for size in sizes:
         print(f"\n📈 Teste mit {size} Vektoren (Dim: {dim})...")
@@ -153,7 +163,8 @@ def run_performance_demo_local():
         query_vec_np = np.random.normal(size=(dim,)).astype(np.float32)
 
         query_times = []
-        for _ in range(min(30, size // 10 + 1)):
+        # Führe mindestens eine Query aus
+        for _ in range(max(1, min(30, size // 10))):
             q_start_time = time.perf_counter()
             store.query(query_vec_np, k=10, use_hnsw=True)
             query_times.append(time.perf_counter() - q_start_time)
@@ -173,8 +184,11 @@ def run_advanced_demo_local():
     
     user_id = "advanced_user_v2"
     model_id = "advanced_test_v2"
-    store = get_demo_store(user_id, model_id)
-    dim = store.dimension or 128
+    # Verwende eine Konfiguration mit kleinerer Dimension für diesen Test
+    adv_config = demo_vs_config
+    adv_config.dimension = 128
+    store = VectorStore(str(DEMO_BASE_PATH / f"user_{user_id}" / model_id), config=adv_config)
+    dim = store.config.dimension
 
     vecs_np = np.random.normal(size=(20, dim)).astype(np.float32)
     meta = [
