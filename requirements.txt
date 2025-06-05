@@ -1,35 +1,25 @@
-# MLX Vector Database Dependencies
+# MLX Vector Database - Streamlined Dependencies
+
 # Core Framework
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 pydantic>=2.0.0
 
-# Configuration
-python-dotenv>=1.0.0
-
-# ML & Computation - Updated to latest MLX versions
+# MLX & Machine Learning
 mlx>=0.25.2
 numpy>=1.26.0
-matplotlib>=3.9.0
-# Utilities
-filelock>=3.13.0
-requests>=2.31.0
-python-multipart>=0.0.6
 
-# Monitoring & System
+# Configuration & Utilities
+python-dotenv>=1.0.0
+requests>=2.31.0
 psutil>=5.9.0
+filelock>=3.13.0
 
 # Development & Testing
 pytest>=7.4.0
 pytest-asyncio>=0.21.0
+httpx>=0.25.0
 
-# Optional: For production deployment
-gunicorn>=21.2.0
-
-# Optional: For advanced monitoring (uncomment if needed)
-prometheus-client>=0.17.0
-tqdm
-grpcio
-grpcio-tools
-requests
-httpx
+# Optional: For advanced features
+# matplotlib>=3.9.0  # For performance graphs
+# tqdm>=4.66.0       # For progress bars
