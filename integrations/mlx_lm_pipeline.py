@@ -34,7 +34,7 @@ except ImportError:
     MLX_LM_AVAILABLE = False
     logger.warning("MLX-LM not available. Install with: pip install mlx-lm")
 
-from service.optimized_vector_store import MLXVectorStoreOptimized
+from service.optimized_vector_store import MLXVectorStore
 
 logger = logging.getLogger("mlx_lm_integration")
 

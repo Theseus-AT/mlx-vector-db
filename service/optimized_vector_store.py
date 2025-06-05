@@ -301,7 +301,7 @@ class MLXVectorStoreConfig:
     hnsw_config: Optional[Dict] = None
 
 
-class MLXVectorStoreOptimized:
+class MLXVectorStore:
     """Production-Ready MLX Vector Store mit allen Optimierungen"""
     
     def __init__(self, store_path: str, config: MLXVectorStoreConfig):
@@ -1186,7 +1186,7 @@ class MLXVectorStoreOptimized:
 
 # =================== PERFORMANCE BENCHMARK ===================
 
-def benchmark_optimized_store(store: MLXVectorStoreOptimized, 
+def benchmark_optimized_store(store: MLXVectorStore, 
                              num_vectors: int = 10000, 
                              num_queries: int = 1000) -> Dict[str, Any]:
     """Comprehensive Performance Benchmark"""
@@ -1302,7 +1302,7 @@ def benchmark_optimized_store(store: MLXVectorStoreOptimized,
 def create_optimized_vector_store(store_path: str, 
                                  dimension: int = 384,
                                  metric: str = "cosine",
-                                 **kwargs) -> MLXVectorStoreOptimized:
+                                 **kwargs) -> MLXVectorStore:
     """Factory function für optimized vector store"""
     
     config = MLXVectorStoreConfig(
@@ -1311,7 +1311,7 @@ def create_optimized_vector_store(store_path: str,
         **kwargs
     )
     
-    return MLXVectorStoreOptimized(store_path, config)
+    return MLXVectorStore(store_path, config)
 
 
 if __name__ == "__main__":

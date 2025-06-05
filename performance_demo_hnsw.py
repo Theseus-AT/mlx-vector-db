@@ -13,7 +13,7 @@ from typing import List, Tuple, Dict, Any# Dict hinzugefügt
 import json
 import logging # Logging hinzugefügt
 import shutil # Für Verzeichnisbereinigung
-from service.optimized_vector_store import MLXVectorStore as VectorStore, VectorStoreConfig  
+from service.optimized_vector_store import MLXVectorStore as VectorStore, MLXVectorStoreConfig  
 from performance.hnsw_index import HNSWConfig
 
 logger = logging.getLogger("mlx_vector_db.perf_demo_hnsw")
@@ -25,7 +25,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 # Stellen Sie sicher, dass vector_store.py im Python-Pfad ist oder der Import relativ korrekt ist.
 # Wenn vector_store.py im Root-Verzeichnis liegt:
 try:
-    from vector_store import VectorStore, VectorStoreConfig #
+    from service.optimized_vector_store import MLXVectorStore, MLXVectorStoreConfig #
 except ImportError as e1:
     logger.error(f"Konnte VectorStore nicht aus 'vector_store.py' importieren: {e1}")
     try:

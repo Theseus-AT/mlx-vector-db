@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 import logging
 import numpy as np
 
-from service.optimized_vector_store import MLXVectorStore, VectorStoreConfig
+from service.optimized_vector_store import MLXVectorStore, MLXVectorStoreConfig
 from service.models import (
     CreateStoreRequest,
     CreateStoreResponse,
@@ -75,7 +75,7 @@ class BulkStoreOperation(BaseModel):
     """Bulk operation on multiple stores"""
     operation: str  # create, delete, optimize, export
     stores: List[Dict[str, str]]  # [{"user_id": "...", "model_id": "..."}]
-    config: Optional[VectorStoreConfig] = None
+    config: Optional[MLXVectorStoreConfig] = None
 
 
 class StoreMaintenanceRequest(BaseModel):
@@ -97,7 +97,7 @@ async def create_store(
     """
     try:
         # Use provided config or defaults
-        config = request.config or VectorStoreConfig()
+        config = request.config or MLXVectorStoreConfig()
         
         # Check if store already exists
         store_key = store_manager.get_store_key(request.user_id, request.model_id)
@@ -469,7 +469,7 @@ async def bulk_store_operation(
             
             try:
                 if request.operation == "create":
-                    config = request.config or VectorStoreConfig()
+                    config = request.config or MLXVectorStoreConfig()
                     await store_manager.get_store(user_id, model_id, config)
                     results.append({"user_id": user_id, "model_id": model_id, "status": "created"})
                 

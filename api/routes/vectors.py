@@ -21,7 +21,7 @@ import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 import logging
 
-from service.optimized_vector_store import MLXVectorStoreOptimized,     MLXVectorStoreConfig, MemoryPressureMonitor, SmartVectorCache, MLXMemoryPool
+from service.optimized_vector_store import MLXVectorStoreConfig, MemoryPressureMonitor, SmartVectorCache, MLXMemoryPool, MLXVectorStore
 from security.auth import verify_api_key
 from service.models import VectorQuery, VectorAddRequest, BatchQueryRequest
 
@@ -34,20 +34,20 @@ class VectorStoreManager:
     
     def __init__(self):
         self._stores: Dict[str, MLXVectorStore] = {}
-        self._configs: Dict[str, VectorStoreConfig] = {}
+        self._configs: Dict[str, MLXVectorStoreConfig] = {}
         self._executor = ThreadPoolExecutor(max_workers=4)  # CPU-bound ops
         
     def get_store_key(self, user_id: str, model_id: str) -> str:
         return f"{user_id}_{model_id}"
     
     async def get_store(self, user_id: str, model_id: str, 
-                       config: Optional[VectorStoreConfig] = None) -> MLXVectorStore:
+                       config: Optional[MLXVectorStoreConfig] = None) -> MLXVectorStore:
         """Get or create vector store with async initialization"""
         store_key = self.get_store_key(user_id, model_id)
         
         if store_key not in self._stores:
             if config is None:
-                config = VectorStoreConfig()  # Default config
+                config = MLXVectorStoreConfig()  # Default config
             
             store_path = f"~/.team_mind_data/vector_stores/{user_id}/{model_id}"
             

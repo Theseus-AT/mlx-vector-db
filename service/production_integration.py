@@ -24,7 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 # Import unserer optimierten Komponenten
 from optimized_vector_store import (
-    MLXVectorStoreOptimized, 
+    MLXVectorStore, 
     MLXVectorStoreConfig,
     MemoryPressureMonitor,
     SmartVectorCache,

@@ -12,8 +12,8 @@ import shutil
 import logging
 
 # Standardisierte Imports - KORRIGIERT
-from service.optimized_vector_store import MLXVectorStore as VectorStore, VectorStoreConfig
-from performance.hnsw_index import HNSWConfig
+from service.optimized_vector_store import MLXVectorStore as VectorStore, MLXVectorStoreConfig
+from performance.hnsw_index import AdaptiveHNSWConfig
 
 logger = logging.getLogger("mlx_vector_db.demo")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -22,11 +22,11 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 DEMO_BASE_PATH = Path("~/.mlx_vector_db_demo_stores").expanduser()
 DEMO_BASE_PATH.mkdir(parents=True, exist_ok=True)
 
-demo_vs_config = VectorStoreConfig(
+demo_vs_config = MLXVectorStoreConfig(
     dimension=384,
     metric="cosine",
     enable_hnsw=True,
-    hnsw_config=HNSWConfig(
+    hnsw_config=AdaptiveHNSWConfig(
         M=16,
         ef_construction=100,
         ef_search=50,
