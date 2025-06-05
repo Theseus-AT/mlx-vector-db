@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 import logging
 import numpy as np
 
-from service.vector_store import MLXVectorStore, VectorStoreConfig
+from service.optimized_vector_store import MLXVectorStore, VectorStoreConfig
 from service.models import (
     CreateStoreRequest,
     CreateStoreResponse,

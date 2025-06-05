@@ -13,7 +13,7 @@ import time
 import numpy as np
 import logging
 
-from service.vector_store import benchmark_vector_store
+from service.optimized_vector_store import benchmark_vector_store
 from service.models import BenchmarkRequest, BenchmarkResponse
 from security.auth import verify_api_key
 from api.routes.vectors import store_manager

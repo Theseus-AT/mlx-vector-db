@@ -1,6 +1,6 @@
 import pytest
 import numpy as np
-from service.vector_store import (
+from service.optimized_vector_store import (
     create_store, add_vectors, query_vectors, delete_store,
     count_vectors, store_exists
 )

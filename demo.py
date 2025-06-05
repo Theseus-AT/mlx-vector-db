@@ -12,7 +12,7 @@ import shutil
 import logging
 
 # Standardisierte Imports - KORRIGIERT
-from service.vector_store import MLXVectorStore as VectorStore, VectorStoreConfig
+from service.optimized_vector_store import MLXVectorStore as VectorStore, VectorStoreConfig
 from performance.hnsw_index import HNSWConfig
 
 logger = logging.getLogger("mlx_vector_db.demo")

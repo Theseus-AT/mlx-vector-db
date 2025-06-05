@@ -21,7 +21,7 @@ import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 import logging
 
-from service.vector_store import MLXVectorStore, VectorStoreConfig, benchmark_vector_store
+from service.optimized_vector_store import MLXVectorStoreOptimized,     MLXVectorStoreConfig, MemoryPressureMonitor, SmartVectorCache, MLXMemoryPool
 from security.auth import verify_api_key
 from service.models import VectorQuery, VectorAddRequest, BatchQueryRequest
 
