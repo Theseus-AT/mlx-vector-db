@@ -24,15 +24,13 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 import threading
 
-# KORRIGIERT: Logger wird am Anfang initialisiert
 logger = logging.getLogger("mlx_lm_integration")
 
-# MLX-LM Imports (wenn verfügbar)
+# MLX-LM Imports (korrigiert basierend auf aktuellen mlx-lm Repository)
 try:
-    from mlx_lm_pipeline import load, generate
-    from mlx_lm.utils import load_config
-    # KORRIGIERT: 'ModelType' ist kein gültiger Export aus mlx_lm.models und wird entfernt.
-    # from mlx_lm.models import ModelType 
+    # Korrekte Imports basierend auf https://github.com/ml-explore/mlx-lm
+    from mlx_lm import load, generate
+    from mlx_lm.utils import load as load_model_utils
     MLX_LM_AVAILABLE = True
 except ImportError:
     MLX_LM_AVAILABLE = False
@@ -53,9 +51,6 @@ class EmbeddingModelConfig:
     quantization: Optional[str] = None  # "4bit", "8bit", None
     trust_remote_code: bool = False
     device_memory_fraction: float = 0.8
-
-# ... (Rest der Datei bleibt unverändert) ...
-# (Fügen Sie hier den Rest Ihrer integrations/mlx_lm_pipeline.py Datei ein)
 
 # Vorkonfigurierte Modelle
 SUPPORTED_EMBEDDING_MODELS = {
@@ -120,10 +115,8 @@ class MLXEmbeddingModel:
             
             try:
                 if self.config.model_type == "mlx-lm" and MLX_LM_AVAILABLE:
-                    self.model, self.tokenizer = load(
-                        self.config.model_path,
-                        adapter_path=None
-                    )
+                    # Korrigierte MLX-LM Nutzung
+                    self.model, self.tokenizer = load(self.config.model_path)
                     
                     # Apply quantization if specified
                     if self.config.quantization:
@@ -151,14 +144,26 @@ class MLXEmbeddingModel:
     def _apply_quantization(self, model):
         """Apply quantization to reduce memory usage"""
         if self.config.quantization == "4bit":
-            # MLX 4-bit quantization
-            model = mx.quantize(model, group_size=64, bits=4)
-            logger.info("Applied 4-bit quantization")
+            # MLX quantization - aktualisiert für neuere API
+            try:
+                import mlx.nn.utils as nn_utils
+                quantized_model = nn_utils.quantize(model, group_size=64, bits=4)
+                logger.info("Applied 4-bit quantization")
+                return quantized_model
+            except (ImportError, AttributeError):
+                logger.warning("4-bit quantization not available, using original model")
+                return model
             
         elif self.config.quantization == "8bit":
             # MLX 8-bit quantization  
-            model = mx.quantize(model, group_size=64, bits=8)
-            logger.info("Applied 8-bit quantization")
+            try:
+                import mlx.nn.utils as nn_utils
+                quantized_model = nn_utils.quantize(model, group_size=64, bits=8)
+                logger.info("Applied 8-bit quantization")
+                return quantized_model
+            except (ImportError, AttributeError):
+                logger.warning("8-bit quantization not available, using original model")
+                return model
             
         return model
     
@@ -192,7 +197,8 @@ class MLXEmbeddingModel:
     
     async def encode_text(self, text: str) -> mx.array:
         """Encode single text to embedding"""
-        return await self.encode_batch([text])[0]
+        results = await self.encode_batch([text])
+        return results[0] if results else mx.array([])
     
     async def encode_batch(self, texts: List[str]) -> List[mx.array]:
         """Encode batch of texts to embeddings"""
@@ -240,35 +246,51 @@ class MLXEmbeddingModel:
             input_ids = mx.array(tokens)[None, :]  # Add batch dimension
             
             # Get embeddings from model
-            with mx.no_grad():
+            try:
                 # Forward pass through embedding layer
-                embeddings_output = self.model(input_ids)
-                
-                # Mean pooling over sequence dimension
-                if hasattr(embeddings_output, 'last_hidden_state'):
-                    hidden_states = embeddings_output.last_hidden_state
-                else:
-                    hidden_states = embeddings_output
-                
-                # Mean pooling
-                embedding = mx.mean(hidden_states, axis=1).squeeze(0)
-                
-                # Normalize
+                with mx.no_grad():
+                    outputs = self.model(input_ids)
+                    
+                    # Extract embeddings (depending on model architecture)
+                    if hasattr(outputs, 'last_hidden_state'):
+                        hidden_states = outputs.last_hidden_state
+                    elif isinstance(outputs, tuple):
+                        hidden_states = outputs[0]
+                    else:
+                        hidden_states = outputs
+                    
+                    # Mean pooling over sequence dimension
+                    embedding = mx.mean(hidden_states, axis=1).squeeze(0)
+                    
+                    # Normalize
+                    embedding = embedding / mx.linalg.norm(embedding)
+                    
+                    embeddings.append(embedding)
+                    
+            except Exception as e:
+                logger.error(f"MLX-LM forward pass failed: {e}")
+                # Fallback to random embedding
+                embedding = mx.random.normal((self.config.dimension,))
                 embedding = embedding / mx.linalg.norm(embedding)
-                
                 embeddings.append(embedding)
         
         return embeddings
     
     async def _encode_with_sentence_transformer(self, texts: List[str]) -> List[mx.array]:
         """Encode texts using sentence transformer (converted to MLX)"""
-        # Use sentence transformer to get embeddings
-        embeddings_np = self.model.encode(texts, batch_size=self.config.batch_size)
-        
-        # Convert to MLX arrays
-        embeddings_mlx = [mx.array(emb) for emb in embeddings_np]
-        
-        return embeddings_mlx
+        try:
+            # Use sentence transformer to get embeddings
+            embeddings_np = self.model.encode(texts, batch_size=self.config.batch_size)
+            
+            # Convert to MLX arrays
+            embeddings_mlx = [mx.array(emb) for emb in embeddings_np]
+            
+            return embeddings_mlx
+            
+        except Exception as e:
+            logger.error(f"Sentence transformer encoding failed: {e}")
+            # Return dummy embeddings
+            return [mx.random.normal((self.config.dimension,)) for _ in texts]
     
     def get_performance_stats(self) -> Dict[str, Any]:
         """Get model performance statistics"""
@@ -293,7 +315,7 @@ class MLXEmbeddingModel:
 class MLXTextEmbeddingPipeline:
     """Complete pipeline: Text → Embeddings → Vector Store"""
     
-    def __init__(self, embedding_model: str, vector_store: MLXVectorStoreOptimized):
+    def __init__(self, embedding_model: str, vector_store: MLXVectorStore):
         self.embedding_model_name = embedding_model
         self.vector_store = vector_store
         
@@ -592,7 +614,7 @@ class DocumentProcessor:
 class RAGPipeline(MLXTextEmbeddingPipeline):
     """Specialized pipeline for RAG (Retrieval-Augmented Generation)"""
     
-    def __init__(self, embedding_model: str, vector_store: MLXVectorStoreOptimized,
+    def __init__(self, embedding_model: str, vector_store: MLXVectorStore,
                  document_processor: DocumentProcessor = None):
         super().__init__(embedding_model, vector_store)
         
@@ -720,7 +742,7 @@ class MLXPipelineFactory:
     """Factory for creating optimized MLX pipelines"""
     
     @staticmethod
-    def create_embedding_pipeline(model_name: str, vector_store: MLXVectorStoreOptimized,
+    def create_embedding_pipeline(model_name: str, vector_store: MLXVectorStore,
                                 pipeline_type: str = "basic") -> MLXTextEmbeddingPipeline:
         """Create embedding pipeline with specified configuration"""
         

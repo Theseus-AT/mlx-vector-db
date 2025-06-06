@@ -4,7 +4,7 @@ Korrigierte Version für Pydantic v2 Kompatibilität
 """
 
 from typing import List, Dict, Any, Optional, Union
-from pydantic import BaseModel, Field, ConfigDict, field_validator
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 from enum import Enum
 import numpy as np
 
@@ -26,15 +26,12 @@ class VectorAddRequest(BaseModel):
     vectors: List[List[float]] = Field(..., description="List of vectors to add")
     metadata: List[Dict[str, Any]] = Field(..., description="Metadata for each vector")
     
-    @field_validator('vectors', 'metadata')
-    @classmethod
-    def validate_same_length(cls, v, info):
-        if hasattr(info, 'data') and info.data:
-            vectors = info.data.get('vectors', [])
-            metadata = info.data.get('metadata', [])
-            if len(vectors) != len(metadata):
-                raise ValueError('Vectors and metadata must have the same length')
-        return v
+    @model_validator(mode='after')
+    def validate_same_length(self):
+        """Validate that vectors and metadata have the same length"""
+        if len(self.vectors) != len(self.metadata):
+            raise ValueError('Vectors and metadata must have the same length')
+        return self
 
 class VectorQuery(BaseModel):
     """Request model for vector similarity search"""

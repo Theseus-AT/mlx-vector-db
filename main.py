@@ -226,8 +226,10 @@ async def health_check():
         test_array = mx.random.normal((5, 5))
         mx.eval(test_array)
         mlx_healthy = True
+        mlx_device = str(mx.default_device())
     except Exception:
         mlx_healthy = False
+        mlx_device = "unknown"
     
     # Get store manager stats
     store_stats = store_manager.get_stats()
@@ -235,11 +237,11 @@ async def health_check():
     health_status = {
         "status": "healthy" if mlx_healthy else "degraded",
         "mlx_available": mlx_healthy,
-        "mlx_device": str(mx.default_device()),
+        "mlx_device": mlx_device,
         "stores_active": store_stats.get("total_stores", 0),
         "total_vectors": store_stats.get("total_vectors", 0),
         "memory_usage_mb": store_stats.get("total_memory_mb", 0.0),
-        "uptime_seconds": time.time() - (time.time() - performance_metrics["startup_time"]),
+        "uptime_seconds": time.time() - performance_metrics["startup_time"],
         "performance_metrics": {
             "total_requests": performance_metrics["total_requests"],
             "total_errors": performance_metrics["total_errors"],

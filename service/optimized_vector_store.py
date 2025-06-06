@@ -1,6 +1,6 @@
 """
-MLX Vector Store - Production-Ready mit MLX 0.25.2 Features
-Korrigierte Version basierend auf aktuellen MLX APIs
+MLX Vector Store - Production-Ready mit aktuellen MLX APIs
+Korrigierte Version basierend auf github.com/ml-explore/mlx
 """
 
 import mlx.core as mx
@@ -20,10 +20,10 @@ from collections import defaultdict
 
 logger = logging.getLogger("mlx_vector_db.optimized_store")
 
-# Compiled MLX functions
+# Compiled MLX functions with current API
 @mx.compile
 def _compiled_cosine_similarity(query: mx.array, vectors: mx.array) -> mx.array:
-    """Optimierte Cosine Similarity mit MLX"""
+    """Optimierte Cosine Similarity mit aktueller MLX API"""
     if query.ndim == 1:
         query = query[None, :]
 
@@ -41,7 +41,7 @@ def _compiled_cosine_similarity(query: mx.array, vectors: mx.array) -> mx.array:
 
 @mx.compile
 def _compiled_euclidean_distance(query: mx.array, vectors: mx.array) -> mx.array:
-    """Optimierte Euclidean Distance mit MLX"""
+    """Optimierte Euclidean Distance mit aktueller MLX API"""
     if query.ndim == 1:
         query = query[None, :]
     diff = vectors - query
@@ -50,7 +50,7 @@ def _compiled_euclidean_distance(query: mx.array, vectors: mx.array) -> mx.array
 
 @mx.compile  
 def _compiled_dot_product(query: mx.array, vectors: mx.array) -> mx.array:
-    """Optimiertes Dot Product mit MLX"""
+    """Optimiertes Dot Product mit aktueller MLX API"""
     if query.ndim == 1:
         return mx.matmul(vectors, query)
     return mx.matmul(vectors, query.T).flatten()
@@ -75,7 +75,7 @@ class MLXVectorStoreConfig:
     hnsw_config: Optional[Any] = None
 
 class MLXVectorStore:
-    """Production-ready MLX Vector Store"""
+    """Production-ready MLX Vector Store mit aktueller MLX API"""
     
     def __init__(self, store_path: str, config: Optional[MLXVectorStoreConfig] = None):
         self.store_path = Path(store_path).expanduser()
@@ -197,6 +197,9 @@ class MLXVectorStore:
             self._vector_count = self._vectors.shape[0]
             self._is_dirty = True
             
+            # Force evaluation for consistency
+            mx.eval(self._vectors)
+            
             # Save to disk
             self._schedule_save()
             
@@ -242,6 +245,9 @@ class MLXVectorStore:
                 similarities = self._compiled_similarity_fn(query_mx, self._vectors)
             else:
                 similarities = self._fallback_similarity(query_mx, self._vectors)
+            
+            # Force evaluation
+            mx.eval(similarities)
             
             # Apply metadata filter if provided
             valid_indices = None
@@ -320,7 +326,7 @@ class MLXVectorStore:
             top_local_indices = sorted_local_indices[:k]
             
             # Map back to global indices
-            top_indices = [valid_indices[i] for i in top_local_indices.tolist()]
+            top_indices = [valid_indices[int(i)] for i in top_local_indices.tolist()]
             top_scores = valid_similarities[top_local_indices]
         else:
             # No filter - use all vectors
@@ -331,7 +337,7 @@ class MLXVectorStore:
             
             k = min(k, self._vector_count)
             top_indices_mx = sorted_indices[:k]
-            top_indices = top_indices_mx.tolist()
+            top_indices = [int(i) for i in top_indices_mx.tolist()]
             top_scores = similarities[top_indices_mx]
         
         # Convert scores to distances
@@ -368,9 +374,14 @@ class MLXVectorStore:
                 logger.error(f"Scheduled save failed: {e}")
     
     def _save_store(self):
-        """Save store to disk"""
+        """Save store to disk using current MLX API"""
         if self._vectors is None:
             return
+        
+        vectors_path = None
+        metadata_path = None
+        temp_vectors_path = None
+        temp_metadata_path = None
         
         try:
             # Ensure directory exists
@@ -380,7 +391,9 @@ class MLXVectorStore:
             vectors_path = self.store_path / "vectors.npz"
             temp_vectors_path = self.store_path / "vectors.npz.tmp"
             
-            mx.savez(str(temp_vectors_path), vectors=self._vectors)
+            # Convert to numpy for saving (current MLX may not have direct npz save)
+            vectors_np = np.array(self._vectors.tolist())
+            np.savez(str(temp_vectors_path), vectors=vectors_np)
             temp_vectors_path.rename(vectors_path)
             
             # Save metadata with atomic write
@@ -398,12 +411,16 @@ class MLXVectorStore:
         except Exception as e:
             logger.error(f"Store save failed: {e}")
             # Clean up temp files
-            for temp_path in [temp_vectors_path, temp_metadata_path]:
-                if 'temp_path' in locals() and temp_path.exists():
-                    try:
-                        temp_path.unlink()
-                    except:
-                        pass
+            if temp_vectors_path and temp_vectors_path.exists():
+                try:
+                    temp_vectors_path.unlink()
+                except:
+                    pass
+            if temp_metadata_path and temp_metadata_path.exists():
+                try:
+                    temp_metadata_path.unlink()
+                except:
+                    pass
             raise
     
     def _load_store(self):
@@ -416,10 +433,11 @@ class MLXVectorStore:
             return
         
         try:
-            # Load vectors
-            data = mx.load(str(vectors_path))
+            # Load vectors using numpy then convert to MLX
+            data = np.load(str(vectors_path))
             if 'vectors' in data:
-                self._vectors = data['vectors']
+                vectors_np = data['vectors']
+                self._vectors = mx.array(vectors_np)
                 self._vector_count = self._vectors.shape[0]
                 logger.info(f"Loaded {self._vector_count} vectors")
             

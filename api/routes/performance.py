@@ -13,7 +13,6 @@ import time
 import numpy as np
 import logging
 
-
 from service.models import BenchmarkRequest, BenchmarkResponse
 from security.auth import verify_api_key
 from api.routes.vectors import store_manager
@@ -33,6 +32,38 @@ class WarmupRequest(BaseModel):
     """Warmup request"""
     user_id: str
     model_id: str
+
+
+def benchmark_vector_store(store, num_vectors: int = 1000, num_queries: int = 100) -> Dict[str, Any]:
+    """Simple benchmark function for vector store performance"""
+    try:
+        # Generate test data
+        test_vectors = np.random.rand(num_vectors, store.config.dimension).astype(np.float32)
+        test_metadata = [{"id": f"bench_{i}"} for i in range(num_vectors)]
+        
+        # Benchmark add
+        start_time = time.time()
+        store.add_vectors(test_vectors, test_metadata)
+        add_time = time.time() - start_time
+        
+        # Benchmark queries
+        query_times = []
+        for i in range(min(num_queries, num_vectors)):
+            start_time = time.time()
+            store.query(test_vectors[i], k=10)
+            query_times.append(time.time() - start_time)
+        
+        avg_query_time = sum(query_times) / len(query_times) if query_times else 0
+        
+        return {
+            "add_time_seconds": add_time,
+            "avg_query_time_seconds": avg_query_time,
+            "vectors_per_second": num_vectors / add_time if add_time > 0 else 0,
+            "queries_per_second": 1 / avg_query_time if avg_query_time > 0 else 0
+        }
+        
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @router.get("/health", response_model=SimpleHealthCheck)

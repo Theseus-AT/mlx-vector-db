@@ -142,12 +142,16 @@ def test_with_auth():
     model_id = "test_model"
     
     try:
-        # Erst versuchen zu löschen (falls vorhanden) - KORRIGIERT
+        # Erst versuchen zu löschen (falls vorhanden)
         delete_params = {"user_id": user_id, "model_id": model_id, "force": True}
         requests.delete(f"{BASE_URL}/admin/store", params=delete_params, headers=admin_headers, timeout=5)
         
-        # Store erstellen
-        create_payload = {"user_id": user_id, "model_id": model_id}
+        # Store erstellen mit dimension Parameter
+        create_payload = {
+            "user_id": user_id, 
+            "model_id": model_id,
+            "dimension": 384  # Erforderlicher Parameter
+        }
         response = requests.post(f"{BASE_URL}/admin/create_store", json=create_payload, headers=admin_headers, timeout=10)
         
         if response.status_code == 200:
@@ -169,9 +173,13 @@ def test_with_auth():
     # 4. Vektoren hinzufügen
     print("\n4️⃣ Adding vectors...")
     try:
-        # Generiere Test-Vektoren
-        vectors = np.random.rand(10, 384).astype(np.float32)
-        metadata = [{"id": f"doc_{i}", "content": f"Document {i}"} for i in range(10)]
+        # Generiere Test-Vektoren - KORREKTE LÄNGEN
+        num_vectors = 10
+        vectors = np.random.rand(num_vectors, 384).astype(np.float32)
+        metadata = [{"id": f"doc_{i}", "content": f"Document {i}"} for i in range(num_vectors)]
+        
+        # Sicherstellung gleicher Längen
+        assert len(vectors) == len(metadata), f"Length mismatch: {len(vectors)} vs {len(metadata)}"
         
         add_payload = {
             "user_id": user_id,
@@ -235,7 +243,6 @@ def test_with_auth():
     # 7. Cleanup
     print("\n7️⃣ Cleanup...")
     try:
-        # KORRIGIERT: Verwende `params` statt `json` für den DELETE-Request
         delete_params = {"user_id": user_id, "model_id": model_id, "force": True}
         response = requests.delete(f"{BASE_URL}/admin/store", params=delete_params, headers=admin_headers, timeout=10)
         
@@ -277,36 +284,3 @@ if __name__ == "__main__":
             print("   python debug_api_keys.py")
     else:
         print("Cannot run tests - server not available")
-
-# quick_test.py
-
-# ... (andere Funktionen) ...
-
-def test_with_auth():
-    # ... (Setup) ...
-
-    # 3. Store erstellen (Admin-Endpunkt)
-    print("\n3️⃣ Creating test store...")
-    user_id = "test_user"
-    model_id = "test_model"
-    
-    try:
-        # Erst versuchen zu löschen (falls vorhanden)
-        delete_params = {"user_id": user_id, "model_id": model_id, "force": True}
-        requests.delete(f"{BASE_URL}/admin/store", params=delete_params, headers=admin_headers)
-        
-        # KORRIGIERT: Payload enthält jetzt die erforderliche 'dimension'
-        create_payload = {
-            "user_id": user_id, 
-            "model_id": model_id,
-            "dimension": 384  # Standard-Dimension für den Test
-        }
-        response = requests.post(f"{BASE_URL}/admin/create_store", json=create_payload, headers=admin_headers, timeout=10)
-        
-        if response.status_code == 200:
-            result = response.json()
-            if "data" in result:
-                print(f"   ✅ Store created: {result['data'].get('store_created', True)}")
-            else:
-                print(f"   ✅ Store created successfully")
-        # ... (Rest der Funktion)

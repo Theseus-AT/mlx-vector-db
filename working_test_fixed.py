@@ -66,7 +66,6 @@ def test_complete_workflow():
     
     # Cleanup erst (falls Store existiert)
     try:
-        # KORRIGIERT: Verwende `params` für DELETE Request
         delete_params = {"user_id": user_id, "model_id": model_id, "force": True}
         requests.delete(f"{BASE_URL}/admin/store", params=delete_params, headers=admin_headers, timeout=5)
     except:
@@ -75,7 +74,8 @@ def test_complete_workflow():
     # Store erstellen mit korrektem JSON Body
     create_payload = {
         "user_id": user_id,
-        "model_id": model_id
+        "model_id": model_id,
+        "dimension": 384  # Erforderlicher Parameter hinzugefügt
     }
     
     response = requests.post(
@@ -97,8 +97,12 @@ def test_complete_workflow():
     
     # 4. Vektoren hinzufügen
     print("\n4️⃣ Adding vectors...")
-    vectors = np.random.rand(5, 384).astype(np.float32)
-    metadata = [{"id": f"test_doc_{i}", "content": f"Test document {i}"} for i in range(5)]
+    num_vectors = 5  # Menge klar definieren
+    vectors = np.random.rand(num_vectors, 384).astype(np.float32)
+    metadata = [{"id": f"test_doc_{i}", "content": f"Test document {i}"} for i in range(num_vectors)]
+    
+    # Sicherstellen dass beide Listen die gleiche Länge haben
+    assert len(vectors) == len(metadata), f"Length mismatch: {len(vectors)} vectors vs {len(metadata)} metadata"
     
     add_payload = {
         "user_id": user_id,
@@ -179,9 +183,8 @@ def test_complete_workflow():
         print(f"   ❌ Vector query failed: {response.status_code}")
         print(f"      Response: {response.text}")
     
-    # 8. Performance Warmup Test - KORRIGIERT
+    # 8. Performance Warmup Test
     print("\n8️⃣ Testing performance warmup...")
-    # KORRIGIERT: Der Endpunkt erwartet einen JSON-Body mit user_id und model_id.
     warmup_payload = {"user_id": user_id, "model_id": model_id}
     response = requests.post(
         f"{BASE_URL}/performance/warmup",
@@ -195,9 +198,8 @@ def test_complete_workflow():
         print(f"   ❌ Performance warmup failed: {response.status_code}")
         print(f"      Response: {response.text}")
     
-    # 9. Cleanup - KORRIGIERT
+    # 9. Cleanup
     print("\n9️⃣ Cleanup...")
-    # KORRIGIERT: Verwende `params` statt `json`
     delete_params = {"user_id": user_id, "model_id": model_id, "force": True}
     response = requests.delete(
         f"{BASE_URL}/admin/store",

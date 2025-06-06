@@ -1,6 +1,6 @@
 """
 MLX compiled operations for maximum performance.
-Optimized for Apple Silicon.
+Optimized for Apple Silicon with current MLX API.
 """
 import mlx.core as mx
 from typing import Tuple, Dict
