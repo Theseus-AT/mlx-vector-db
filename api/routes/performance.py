@@ -1,3 +1,4 @@
+#
 """
 Performance API for MLX Vector Database
 Essential performance testing and monitoring endpoints

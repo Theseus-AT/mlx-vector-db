@@ -1,4 +1,4 @@
-# integrations/mlx_lm_pipeline.py
+## integrations/mlx_lm_pipeline.py
 """
 MLX-LM Integration Pipeline für End-to-End Text Processing
 Korrigierte Version basierend auf aktuellen MLX-LM APIs

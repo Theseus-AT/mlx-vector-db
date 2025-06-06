@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+##!/usr/bin/env python3
 """
 Schneller Test der MLX Vector Database API
 Automatische Erkennung der korrekten API-Keys

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+##!/usr/bin/env python3
 """
 Einfacher Funktionstest für MLX Vector Database
 Testet grundlegende Funktionalität ohne komplexe Dependencies

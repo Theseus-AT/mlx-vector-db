@@ -1,4 +1,4 @@
-# sdk/python/mlx_vector_client.py
+## sdk/python/mlx_vector_client.py
 """
 Production-Ready Python SDK für MLX Vector Database
 Korrigierte Version mit vereinfachten Dependencies

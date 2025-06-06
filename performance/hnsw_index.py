@@ -1,3 +1,4 @@
+#
 """
 HNSW Index System für MLX Vector Database
 Vereinfachte, funktionierende Implementation

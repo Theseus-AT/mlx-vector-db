@@ -1,7 +1,7 @@
 # core/logging_config.py
 # (Ihre bestehende logging_config.py ist bereits sehr gut)
 # Die folgende Anpassung stellt sicher, dass die Middleware-Funktion klar definiert ist.
-
+#
 import json
 import logging
 import logging.config

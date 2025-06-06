@@ -1,4 +1,4 @@
-# performance_demo_hnsw.py
+## performance_demo_hnsw.py
 # (Basiert auf Ihrer Datei performance_demo.py mit der PerformanceTester Klasse)
 """
 Performance- und Genauigkeitstests für die HNSW-Implementierung und VectorStore-Klasse.

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+##!/usr/bin/env python3
 """
 Funktionierender MLX Vector Database Test
 Mit korrekten Parametern für alle Endpunkte

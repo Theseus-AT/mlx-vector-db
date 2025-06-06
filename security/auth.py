@@ -1,3 +1,4 @@
+#
 """
 Security and Authentication for MLX Vector Database
 Simple, robust API key authentication with JWT support

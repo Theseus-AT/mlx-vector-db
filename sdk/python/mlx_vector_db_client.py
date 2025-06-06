@@ -1,6 +1,6 @@
 # Neue Datei: sdk/python/mlx_vector_db_client.py
 # Implementiert einen asynchronen Python-Client für die MLX Vector DB REST API.
-
+#
 # MLX Specificity: Der Client sollte idealerweise mx.array als Eingabe für Vektoren
 #                  akzeptieren und optional als Ausgabe anbieten. Für die JSON-Serialisierung
 #                  über HTTP müssen mx.arrays jedoch in Listen konvertiert werden, wie

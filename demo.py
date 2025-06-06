@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+##!/usr/bin/env python3
 """
 Demo script für MLX Vector Database
 Korrigierte Version mit funktionierenden Imports und Operationen

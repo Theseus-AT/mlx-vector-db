@@ -1,4 +1,4 @@
-# monitoring/metrics.py
+## monitoring/metrics.py
 """
 Comprehensive monitoring and metrics for MLX Vector Database
 Provides Prometheus-compatible metrics and health monitoring

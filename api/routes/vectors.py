@@ -1,3 +1,4 @@
+#
 """
 Optimized FastAPI Vector Operations
 Korrigierte Version mit funktionierendem Store Manager

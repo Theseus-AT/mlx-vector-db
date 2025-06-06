@@ -1,4 +1,4 @@
-# api/middleware/rate_limiting.py
+## api/middleware/rate_limiting.py
 """
 Production-Grade Rate Limiting für MLX Vector Database
 Intelligente Rate Limits basierend auf Operation Type und User Tier

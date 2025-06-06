@@ -1,3 +1,4 @@
+#
 """
 Monitoring API for MLX Vector Database
 Essential monitoring and health check endpoints

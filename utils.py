@@ -1,4 +1,4 @@
-# utils.py
+## utils.py
 from pathlib import Path
 from filelock import FileLock
 import mlx.core as mx # Import mx if using it directly here, or pass numpy/list
