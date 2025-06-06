@@ -195,6 +195,8 @@ async def add_vectors(
         logger.error(f"Error adding vectors: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to add vectors: {str(e)}")
 
+# In api/routes/vectors.py
+
 @router.post("/query", response_model=VectorQueryResponse)  
 async def query_vectors(
     request: VectorQuery,
@@ -204,16 +206,14 @@ async def query_vectors(
     start_time = time.time()
     
     try:
-        # Get store
         store = await store_manager.get_store(request.user_id, request.model_id)
         
-        # Validate query vector
         if not request.query:
             raise HTTPException(status_code=400, detail="Query vector required")
         
-        # Perform similarity search in thread pool
+        # Führe die Abfrage aus
         loop = asyncio.get_event_loop()
-        results = await loop.run_in_executor(
+        indices, results_scores, metadata_list = await loop.run_in_executor(
             store_manager._executor,
             lambda: store.query(
                 request.query, 
@@ -222,25 +222,29 @@ async def query_vectors(
             )
         )
         
-        # Format results
+        # KORREKTUR: Formatiere die Ergebnisse basierend auf der Metrik des Stores
         formatted_results = []
-        if isinstance(results, tuple) and len(results) == 3:
-            indices, distances, metadata_list = results
-            for i, (idx, dist, meta) in enumerate(zip(indices, distances, metadata_list)):
-                # Calculate similarity score based on metric
-                if hasattr(store.config, 'metric') and store.config.metric == "cosine":
-                    similarity_score = max(0, 1.0 - dist)
-                elif store.config.metric == "euclidean":
-                    similarity_score = 1.0 / (1.0 + dist)  # Convert distance to similarity
-                else:
-                    similarity_score = max(0, -dist)  # For dot product
-                
-                formatted_results.append({
-                    "metadata": meta,
-                    "similarity_score": float(similarity_score),
-                    "distance": float(dist),
-                    "rank": i + 1
-                })
+        for i, (idx, raw_score, meta) in enumerate(zip(indices, results_scores, metadata_list)):
+            similarity_score: float = 0.0
+            distance: float = 0.0
+            
+            if store.config.metric == "cosine":
+                similarity_score = raw_score
+                distance = 1.0 - similarity_score
+            elif store.config.metric == "euclidean":
+                distance = raw_score
+                similarity_score = 1.0 / (1.0 + distance)
+            elif store.config.metric == "dot_product":
+                # Annahme: Dot Product kann normalisiert werden oder als roher Score behandelt werden
+                similarity_score = raw_score
+                distance = -raw_score # Pseudo-Distanz
+
+            formatted_results.append({
+                "metadata": meta,
+                "similarity_score": similarity_score,
+                "distance": distance,
+                "rank": i + 1
+            })
         
         query_time = (time.time() - start_time) * 1000
         
@@ -251,7 +255,7 @@ async def query_vectors(
         )
         
     except Exception as e:
-        logger.error(f"Error querying vectors: {str(e)}")
+        logger.error(f"Error querying vectors: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
 
 @router.post("/batch_query", response_model=BatchQueryResponse)
