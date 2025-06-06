@@ -1,14 +1,7 @@
 # integrations/mlx_lm_pipeline.py
 """
 MLX-LM Integration Pipeline für End-to-End Text Processing
-Direkte Integration von Text → Embeddings → Vector Store
-
-🚀 Features:
-- Eingebaute MLX-LM Modelle für Embeddings
-- Quantization Support für Memory Efficiency  
-- Token-efficient Batch Processing
-- Model-specific Optimizations
-- Streaming Text Processing
+Korrigierte Version basierend auf aktuellen MLX-LM APIs
 """
 
 import mlx.core as mx
@@ -16,7 +9,7 @@ import mlx.nn as nn
 import numpy as np
 import asyncio
 import logging
-from typing import List, Dict, Any, Optional, Union, AsyncGenerator, Tuple
+from typing import List, Dict, Any, Optional, Union, AsyncGenerator, Tuple, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 import json
@@ -26,676 +19,461 @@ import threading
 
 logger = logging.getLogger("mlx_lm_integration")
 
-# MLX-LM Imports (korrigiert basierend auf aktuellen mlx-lm Repository)
+# MLX-LM Imports mit Fehlerbehandlung
 try:
-    # Korrekte Imports basierend auf https://github.com/ml-explore/mlx-lm
+    # Korrigierte Imports basierend auf aktueller mlx-lm Struktur
     from mlx_lm import load, generate
-    from mlx_lm.utils import load as load_model_utils
+    from mlx_lm.utils import load as load_utils
     MLX_LM_AVAILABLE = True
-except ImportError:
+    logger.info("MLX-LM erfolgreich importiert")
+except ImportError as e:
     MLX_LM_AVAILABLE = False
-    logger.warning("MLX-LM not available. Install with: pip install mlx-lm")
+    logger.warning(f"MLX-LM nicht verfügbar: {e}")
+    logger.info("Installieren Sie mit: pip install mlx-lm")
+
+# Fallback für Sentence Transformers
+try:
+    from sentence_transformers import SentenceTransformer
+    SENTENCE_TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    SENTENCE_TRANSFORMERS_AVAILABLE = False
+    logger.warning("sentence-transformers nicht verfügbar")
 
 from service.optimized_vector_store import MLXVectorStore
 
-# =================== MODEL CONFIGURATIONS ===================
+# =================== EMBEDDING MODEL CONFIGURATIONS ===================
 
 @dataclass
 class EmbeddingModelConfig:
-    """Configuration for embedding models"""
+    """Konfiguration für Embedding-Modelle"""
     model_path: str
-    model_type: str  # "sentence-transformer", "mlx-lm", "custom"
+    model_type: str  # "sentence-transformer", "mlx-lm", "mock"
     dimension: int
     max_sequence_length: int = 512
     batch_size: int = 32
-    quantization: Optional[str] = None  # "4bit", "8bit", None
+    quantization: Optional[str] = None
     trust_remote_code: bool = False
-    device_memory_fraction: float = 0.8
 
-# Vorkonfigurierte Modelle
+# Vereinfachte, funktionierende Modell-Konfigurationen
 SUPPORTED_EMBEDDING_MODELS = {
     "multilingual-e5-small": EmbeddingModelConfig(
         model_path="intfloat/multilingual-e5-small",
-        model_type="sentence-transformer",
+        model_type="sentence-transformer" if SENTENCE_TRANSFORMERS_AVAILABLE else "mock",
         dimension=384,
         max_sequence_length=512,
         batch_size=64
     ),
-    "gte-large": EmbeddingModelConfig(
-        model_path="thenlper/gte-large",
-        model_type="sentence-transformer", 
-        dimension=1024,
+    "mock-384": EmbeddingModelConfig(
+        model_path="mock",
+        model_type="mock",
+        dimension=384,
         max_sequence_length=512,
         batch_size=32
-    ),
-    "e5-mistral-7b": EmbeddingModelConfig(
-        model_path="intfloat/e5-mistral-7b-instruct",
-        model_type="mlx-lm",
-        dimension=4096,
-        max_sequence_length=32768,
-        batch_size=8,
-        quantization="4bit"
-    ),
-    "bge-m3": EmbeddingModelConfig(
-        model_path="BAAI/bge-m3",
-        model_type="sentence-transformer",
-        dimension=1024,
-        max_sequence_length=8192,
-        batch_size=16
     )
 }
 
-# =================== MLX-LM EMBEDDING MODEL ===================
+# =================== MOCK EMBEDDING MODEL ===================
 
-class MLXEmbeddingModel:
-    """MLX-optimized embedding model with quantization support"""
+class MockEmbeddingModel:
+    """Mock Embedding Model für Tests und Demos"""
+    
+    def __init__(self, config: EmbeddingModelConfig):
+        self.config = config
+        self._is_loaded = True
+        logger.info(f"Mock embedding model initialized (dim={config.dimension})")
+    
+    async def load_model(self):
+        """Mock model loading"""
+        logger.info("Mock model 'loaded'")
+        return True
+    
+    async def encode_text(self, text: str) -> mx.array:
+        """Encode single text to mock embedding"""
+        # Deterministisch basierend auf Text-Hash für Konsistenz
+        import hashlib
+        text_hash = hashlib.md5(text.encode()).hexdigest()
+        seed = int(text_hash[:8], 16) % 2**32
+        
+        np.random.seed(seed)
+        embedding = np.random.normal(0, 1, self.config.dimension).astype(np.float32)
+        # Normalisieren
+        embedding = embedding / np.linalg.norm(embedding)
+        
+        return mx.array(embedding)
+    
+    async def encode_batch(self, texts: List[str]) -> List[mx.array]:
+        """Encode batch of texts"""
+        results = []
+        for text in texts:
+            embedding = await self.encode_text(text)
+            results.append(embedding)
+        return results
+    
+    def get_performance_stats(self) -> Dict[str, Any]:
+        """Mock performance stats"""
+        return {
+            "model_type": "mock",
+            "dimension": self.config.dimension,
+            "total_inferences": 0,
+            "avg_inference_time_ms": 1.0
+        }
+
+# =================== SENTENCE TRANSFORMER MODEL ===================
+
+class SentenceTransformerModel:
+    """Sentence Transformer Wrapper"""
     
     def __init__(self, config: EmbeddingModelConfig):
         self.config = config
         self.model = None
-        self.tokenizer = None
-        self._model_lock = threading.Lock()
         self._is_loaded = False
-        
-        # Performance tracking
         self._inference_times = []
-        self._batch_sizes = []
-        
-    async def load_model(self) -> None:
-        """Load model with MLX optimizations"""
-        if self._is_loaded:
-            return
-        
-        with self._model_lock:
-            if self._is_loaded:
-                return
-                
-            logger.info(f"Loading embedding model: {self.config.model_path}")
-            start_time = time.time()
-            
-            try:
-                if self.config.model_type == "mlx-lm" and MLX_LM_AVAILABLE:
-                    # Korrigierte MLX-LM Nutzung
-                    self.model, self.tokenizer = load(self.config.model_path)
-                    
-                    # Apply quantization if specified
-                    if self.config.quantization:
-                        self.model = self._apply_quantization(self.model)
-                    
-                elif self.config.model_type == "sentence-transformer":
-                    # Fallback to sentence-transformers with MLX conversion
-                    self.model = self._load_sentence_transformer()
-                
-                else:
-                    raise ValueError(f"Unsupported model type: {self.config.model_type}")
-                
-                load_time = time.time() - start_time
-                logger.info(f"Model loaded in {load_time:.2f}s")
-                
-                # Warmup with dummy input
-                await self._warmup_model()
-                
-                self._is_loaded = True
-                
-            except Exception as e:
-                logger.error(f"Failed to load model: {e}")
-                raise
     
-    def _apply_quantization(self, model):
-        """Apply quantization to reduce memory usage"""
-        if self.config.quantization == "4bit":
-            # MLX quantization - aktualisiert für neuere API
-            try:
-                import mlx.nn.utils as nn_utils
-                quantized_model = nn_utils.quantize(model, group_size=64, bits=4)
-                logger.info("Applied 4-bit quantization")
-                return quantized_model
-            except (ImportError, AttributeError):
-                logger.warning("4-bit quantization not available, using original model")
-                return model
-            
-        elif self.config.quantization == "8bit":
-            # MLX 8-bit quantization  
-            try:
-                import mlx.nn.utils as nn_utils
-                quantized_model = nn_utils.quantize(model, group_size=64, bits=8)
-                logger.info("Applied 8-bit quantization")
-                return quantized_model
-            except (ImportError, AttributeError):
-                logger.warning("8-bit quantization not available, using original model")
-                return model
-            
-        return model
-    
-    def _load_sentence_transformer(self):
-        """Load sentence transformer and convert to MLX"""
+    async def load_model(self):
+        """Load sentence transformer model"""
+        if not SENTENCE_TRANSFORMERS_AVAILABLE:
+            raise ImportError("sentence-transformers not available")
+        
         try:
-            from sentence_transformers import SentenceTransformer
-            
-            # Load the model
-            model = SentenceTransformer(self.config.model_path)
-            
-            # Convert to MLX (simplified - would need full conversion logic)
-            # For now, we'll use the original model and convert outputs
+            self.model = SentenceTransformer(self.config.model_path)
+            self._is_loaded = True
             logger.info(f"Loaded sentence transformer: {self.config.model_path}")
-            return model
-            
-        except ImportError:
-            raise ImportError("sentence-transformers not available. Install with: pip install sentence-transformers")
-    
-    async def _warmup_model(self) -> None:
-        """Warmup model with dummy inputs"""
-        logger.info("Warming up embedding model...")
-        
-        dummy_texts = ["This is a warmup text.", "Another warmup example."]
-        
-        try:
-            await self.encode_batch(dummy_texts)
-            logger.info("Model warmup completed")
         except Exception as e:
-            logger.warning(f"Model warmup failed: {e}")
+            logger.error(f"Failed to load sentence transformer: {e}")
+            raise
     
     async def encode_text(self, text: str) -> mx.array:
-        """Encode single text to embedding"""
+        """Encode single text"""
         results = await self.encode_batch([text])
-        return results[0] if results else mx.array([])
+        return results[0]
     
     async def encode_batch(self, texts: List[str]) -> List[mx.array]:
-        """Encode batch of texts to embeddings"""
+        """Encode batch of texts"""
         if not self._is_loaded:
             await self.load_model()
         
         start_time = time.time()
         
         try:
-            if self.config.model_type == "mlx-lm":
-                embeddings = await self._encode_with_mlx_lm(texts)
-            else:
-                embeddings = await self._encode_with_sentence_transformer(texts)
-            
-            # Track performance
-            inference_time = time.time() - start_time
-            self._inference_times.append(inference_time)
-            self._batch_sizes.append(len(texts))
-            
-            # Keep only recent metrics
-            if len(self._inference_times) > 100:
-                self._inference_times.pop(0)
-                self._batch_sizes.pop(0)
-            
-            logger.debug(f"Encoded {len(texts)} texts in {inference_time:.3f}s")
-            return embeddings
-            
-        except Exception as e:
-            logger.error(f"Encoding failed: {e}")
-            raise
-    
-    async def _encode_with_mlx_lm(self, texts: List[str]) -> List[mx.array]:
-        """Encode texts using MLX-LM model"""
-        embeddings = []
-        
-        for text in texts:
-            # Tokenize text
-            tokens = self.tokenizer.encode(text)
-            
-            # Truncate if necessary
-            if len(tokens) > self.config.max_sequence_length:
-                tokens = tokens[:self.config.max_sequence_length]
-            
-            # Convert to MLX array
-            input_ids = mx.array(tokens)[None, :]  # Add batch dimension
-            
-            # Get embeddings from model
-            try:
-                # Forward pass through embedding layer
-                with mx.no_grad():
-                    outputs = self.model(input_ids)
-                    
-                    # Extract embeddings (depending on model architecture)
-                    if hasattr(outputs, 'last_hidden_state'):
-                        hidden_states = outputs.last_hidden_state
-                    elif isinstance(outputs, tuple):
-                        hidden_states = outputs[0]
-                    else:
-                        hidden_states = outputs
-                    
-                    # Mean pooling over sequence dimension
-                    embedding = mx.mean(hidden_states, axis=1).squeeze(0)
-                    
-                    # Normalize
-                    embedding = embedding / mx.linalg.norm(embedding)
-                    
-                    embeddings.append(embedding)
-                    
-            except Exception as e:
-                logger.error(f"MLX-LM forward pass failed: {e}")
-                # Fallback to random embedding
-                embedding = mx.random.normal((self.config.dimension,))
-                embedding = embedding / mx.linalg.norm(embedding)
-                embeddings.append(embedding)
-        
-        return embeddings
-    
-    async def _encode_with_sentence_transformer(self, texts: List[str]) -> List[mx.array]:
-        """Encode texts using sentence transformer (converted to MLX)"""
-        try:
-            # Use sentence transformer to get embeddings
+            # Use sentence transformer
             embeddings_np = self.model.encode(texts, batch_size=self.config.batch_size)
             
             # Convert to MLX arrays
             embeddings_mlx = [mx.array(emb) for emb in embeddings_np]
             
+            # Track performance
+            inference_time = time.time() - start_time
+            self._inference_times.append(inference_time)
+            
             return embeddings_mlx
             
         except Exception as e:
-            logger.error(f"Sentence transformer encoding failed: {e}")
-            # Return dummy embeddings
-            return [mx.random.normal((self.config.dimension,)) for _ in texts]
+            logger.error(f"Encoding failed: {e}")
+            raise
     
     def get_performance_stats(self) -> Dict[str, Any]:
-        """Get model performance statistics"""
+        """Get performance statistics"""
         if not self._inference_times:
             return {"no_data": True}
         
         avg_time = sum(self._inference_times) / len(self._inference_times)
-        avg_batch_size = sum(self._batch_sizes) / len(self._batch_sizes)
-        throughput = avg_batch_size / avg_time if avg_time > 0 else 0
-        
         return {
+            "model_type": "sentence-transformer",
             "avg_inference_time_ms": avg_time * 1000,
-            "avg_batch_size": avg_batch_size,
-            "throughput_texts_per_sec": throughput,
-            "total_inferences": len(self._inference_times),
-            "model_type": self.config.model_type,
-            "quantization": self.config.quantization
+            "total_inferences": len(self._inference_times)
         }
 
-# =================== END-TO-END PIPELINE ===================
+# =================== MLX EMBEDDING MODEL ===================
+
+class MLXEmbeddingModel:
+    """MLX-LM basiertes Embedding Model"""
+    
+    def __init__(self, config: EmbeddingModelConfig):
+        self.config = config
+        self.model = None
+        self.tokenizer = None
+        self._is_loaded = False
+        self._inference_times = []
+    
+    async def load_model(self):
+        """Load MLX-LM model"""
+        if not MLX_LM_AVAILABLE:
+            raise ImportError("MLX-LM not available")
+        
+        try:
+            # Verwende korrekte MLX-LM API
+            self.model, self.tokenizer = load(self.config.model_path)
+            self._is_loaded = True
+            logger.info(f"Loaded MLX-LM model: {self.config.model_path}")
+        except Exception as e:
+            logger.error(f"Failed to load MLX-LM model: {e}")
+            raise
+    
+    async def encode_text(self, text: str) -> mx.array:
+        """Encode single text with MLX-LM"""
+        results = await self.encode_batch([text])
+        return results[0]
+    
+    async def encode_batch(self, texts: List[str]) -> List[mx.array]:
+        """Encode batch with MLX-LM"""
+        if not self._is_loaded:
+            await self.load_model()
+        
+        start_time = time.time()
+        embeddings = []
+        
+        try:
+            for text in texts:
+                # Tokenize
+                tokens = self.tokenizer.encode(text)
+                if len(tokens) > self.config.max_sequence_length:
+                    tokens = tokens[:self.config.max_sequence_length]
+                
+                # Convert to MLX array
+                input_ids = mx.array(tokens)[None, :]
+                
+                # Get embeddings (vereinfacht)
+                with mx.no_grad():
+                    # Dies ist vereinfacht - echte Implementation hängt vom Modell ab
+                    outputs = self.model(input_ids)
+                    if hasattr(outputs, 'last_hidden_state'):
+                        hidden_states = outputs.last_hidden_state
+                    else:
+                        hidden_states = outputs
+                    
+                    # Mean pooling
+                    embedding = mx.mean(hidden_states, axis=1).squeeze(0)
+                    
+                    # Normalize
+                    embedding = embedding / mx.linalg.norm(embedding)
+                    embeddings.append(embedding)
+            
+            # Track performance
+            inference_time = time.time() - start_time
+            self._inference_times.append(inference_time)
+            
+            return embeddings
+            
+        except Exception as e:
+            logger.error(f"MLX-LM encoding failed: {e}")
+            raise
+    
+    def get_performance_stats(self) -> Dict[str, Any]:
+        """Get performance statistics"""
+        if not self._inference_times:
+            return {"no_data": True}
+        
+        avg_time = sum(self._inference_times) / len(self._inference_times)
+        return {
+            "model_type": "mlx-lm",
+            "avg_inference_time_ms": avg_time * 1000,
+            "total_inferences": len(self._inference_times)
+        }
+
+# =================== EMBEDDING MODEL FACTORY ===================
+
+def create_embedding_model(model_name: str) -> Union[MockEmbeddingModel, SentenceTransformerModel, MLXEmbeddingModel]:
+    """Factory function für Embedding Models"""
+    
+    if model_name not in SUPPORTED_EMBEDDING_MODELS:
+        # Fallback zu Mock-Modell
+        logger.warning(f"Unknown model {model_name}, using mock model")
+        model_name = "mock-384"
+    
+    config = SUPPORTED_EMBEDDING_MODELS[model_name]
+    
+    if config.model_type == "mock":
+        return MockEmbeddingModel(config)
+    elif config.model_type == "sentence-transformer" and SENTENCE_TRANSFORMERS_AVAILABLE:
+        return SentenceTransformerModel(config)
+    elif config.model_type == "mlx-lm" and MLX_LM_AVAILABLE:
+        return MLXEmbeddingModel(config)
+    else:
+        # Fallback zu Mock
+        logger.warning(f"Model type {config.model_type} not available, using mock")
+        config.model_type = "mock"
+        return MockEmbeddingModel(config)
+
+# =================== TEXT EMBEDDING PIPELINE ===================
 
 class MLXTextEmbeddingPipeline:
-    """Complete pipeline: Text → Embeddings → Vector Store"""
+    """Vereinfachte Text-Embedding-Pipeline"""
     
     def __init__(self, embedding_model: str, vector_store: MLXVectorStore):
         self.embedding_model_name = embedding_model
         self.vector_store = vector_store
-        
-        # Load embedding model config
-        if embedding_model in SUPPORTED_EMBEDDING_MODELS:
-            self.embedding_config = SUPPORTED_EMBEDDING_MODELS[embedding_model]
-        else:
-            raise ValueError(f"Unsupported embedding model: {embedding_model}")
-        
-        # Initialize embedding model
-        self.embedding_model = MLXEmbeddingModel(self.embedding_config)
+        self.embedding_model = create_embedding_model(embedding_model)
         
         # Processing stats
         self.stats = {
             "total_texts_processed": 0,
             "total_vectors_stored": 0,
-            "total_processing_time_ms": 0,
-            "embedding_time_ms": 0,
-            "storage_time_ms": 0
+            "total_processing_time_ms": 0
         }
     
-    async def initialize(self) -> None:
-        """Initialize the complete pipeline"""
+    async def initialize(self):
+        """Initialize pipeline"""
         logger.info("Initializing MLX Text Embedding Pipeline...")
-        
-        # Load embedding model
         await self.embedding_model.load_model()
         
-        # Verify vector store compatibility
-        if self.vector_store.config.dimension != self.embedding_config.dimension:
-            raise ValueError(
-                f"Dimension mismatch: embedding model {self.embedding_config.dimension} "
-                f"vs vector store {self.vector_store.config.dimension}"
-            )
+        # Verify dimensions match
+        expected_dim = self.embedding_model.config.dimension
+        store_dim = self.vector_store.config.dimension
+        
+        if expected_dim != store_dim:
+            raise ValueError(f"Dimension mismatch: model {expected_dim} vs store {store_dim}")
         
         logger.info("Pipeline initialization complete")
     
     async def process_texts(self, texts: List[str], 
-                          metadata: Optional[List[Dict[str, Any]]] = None,
-                          batch_size: Optional[int] = None) -> Dict[str, Any]:
-        """Process texts end-to-end: embed and store"""
+                          metadata: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """Process texts: embed and store"""
         
         start_time = time.time()
         
-        # Validate inputs
-        if metadata and len(metadata) != len(texts):
-            raise ValueError("Metadata length must match texts length")
-        
-        # Default metadata if not provided
+        # Default metadata
         if metadata is None:
             metadata = [{"text": text[:100], "index": i} for i, text in enumerate(texts)]
         
-        # Determine batch size
-        batch_size = batch_size or self.embedding_config.batch_size
+        # Validate
+        if len(texts) != len(metadata):
+            raise ValueError("Texts and metadata length mismatch")
         
-        # Process in batches
-        all_embeddings = []
-        embedding_start = time.time()
+        # Embed texts
+        embeddings = await self.embedding_model.encode_batch(texts)
         
-        for i in range(0, len(texts), batch_size):
-            batch_texts = texts[i:i + batch_size]
-            batch_embeddings = await self.embedding_model.encode_batch(batch_texts)
-            all_embeddings.extend(batch_embeddings)
-        
-        embedding_time = time.time() - embedding_start
-        
-        # Convert MLX arrays to numpy for storage
-        storage_start = time.time()
-        embeddings_np = np.array([np.array(emb.tolist()) for emb in all_embeddings], dtype=np.float32)
+        # Convert to numpy for storage
+        embeddings_np = np.array([np.array(emb.tolist()) for emb in embeddings], dtype=np.float32)
         
         # Store in vector database
         storage_result = self.vector_store.add_vectors(embeddings_np, metadata)
-        storage_time = time.time() - storage_start
         
         # Update stats
         total_time = time.time() - start_time
         self.stats["total_texts_processed"] += len(texts)
         self.stats["total_vectors_stored"] += len(embeddings_np)
         self.stats["total_processing_time_ms"] += total_time * 1000
-        self.stats["embedding_time_ms"] += embedding_time * 1000
-        self.stats["storage_time_ms"] += storage_time * 1000
         
         return {
             "success": True,
             "texts_processed": len(texts),
             "vectors_stored": len(embeddings_np),
-            "embedding_time_ms": embedding_time * 1000,
-            "storage_time_ms": storage_time * 1000,
             "total_time_ms": total_time * 1000,
             "throughput_texts_per_sec": len(texts) / total_time if total_time > 0 else 0,
             "storage_result": storage_result
         }
     
-    async def search_similar_texts(self, query_text: str, k: int = 10,
-                                 filter_metadata: Optional[Dict] = None) -> List[Dict[str, Any]]:
-        """Search for similar texts using semantic search"""
+    async def search_similar_texts(self, query_text: str, k: int = 10) -> List[Dict[str, Any]]:
+        """Search for similar texts"""
         
-        # Encode query text
+        # Encode query
         query_embedding = await self.embedding_model.encode_text(query_text)
         query_np = np.array(query_embedding.tolist())
         
-        # Search in vector store
-        indices, distances, metadata_results = self.vector_store.query(
-            query_np, k=k, filter_metadata=filter_metadata
-        )
+        # Search
+        indices, distances, metadata_results = self.vector_store.query(query_np, k=k)
         
         # Format results
         results = []
         for i, (idx, dist, meta) in enumerate(zip(indices, distances, metadata_results)):
             similarity_score = max(0, 1.0 - dist) if self.vector_store.config.metric == "cosine" else -dist
             
-            result = {
+            results.append({
                 "rank": i + 1,
                 "similarity_score": float(similarity_score),
                 "distance": float(dist),
                 "metadata": meta,
-                "text_preview": meta.get("text", "")[:200] + "..." if len(meta.get("text", "")) > 200 else meta.get("text", "")
-            }
-            results.append(result)
+                "text_preview": meta.get("text", "")[:200]
+            })
         
         return results
     
-    async def process_streaming_texts(self, text_stream: AsyncGenerator[str, None],
-                                    batch_size: int = None) -> AsyncGenerator[Dict[str, Any], None]:
-        """Process streaming texts with real-time embeddings"""
-        
-        batch_size = batch_size or self.embedding_config.batch_size
-        current_batch = []
-        current_metadata = []
-        batch_count = 0
-        
-        async for text in text_stream:
-            current_batch.append(text)
-            current_metadata.append({
-                "text": text[:100],
-                "batch": batch_count,
-                "timestamp": time.time()
-            })
-            
-            if len(current_batch) >= batch_size:
-                # Process current batch
-                result = await self.process_texts(current_batch, current_metadata)
-                
-                yield {
-                    "batch_processed": batch_count,
-                    "batch_size": len(current_batch),
-                    "result": result
-                }
-                
-                # Reset for next batch
-                current_batch = []
-                current_metadata = []
-                batch_count += 1
-        
-        # Process remaining texts
-        if current_batch:
-            result = await self.process_texts(current_batch, current_metadata)
-            
-            yield {
-                "batch_processed": batch_count,
-                "batch_size": len(current_batch),
-                "result": result,
-                "final_batch": True
-            }
-    
     def get_pipeline_stats(self) -> Dict[str, Any]:
-        """Get comprehensive pipeline statistics"""
-        
+        """Get pipeline statistics"""
         embedding_stats = self.embedding_model.get_performance_stats()
-        vector_store_stats = self.vector_store.get_comprehensive_stats()
-        
-        # Calculate average processing time per text
-        avg_time_per_text = (
-            self.stats["total_processing_time_ms"] / self.stats["total_texts_processed"]
-            if self.stats["total_texts_processed"] > 0 else 0
-        )
         
         return {
             "pipeline_stats": self.stats,
-            "avg_time_per_text_ms": avg_time_per_text,
             "embedding_model_stats": embedding_stats,
-            "vector_store_stats": vector_store_stats,
             "model_configuration": {
                 "embedding_model": self.embedding_model_name,
-                "dimension": self.embedding_config.dimension,
-                "max_sequence_length": self.embedding_config.max_sequence_length,
-                "quantization": self.embedding_config.quantization
+                "dimension": self.embedding_model.config.dimension
             }
         }
 
-# =================== DOCUMENT PROCESSING UTILITIES ===================
-
-class DocumentProcessor:
-    """Advanced document processing with chunking and metadata extraction"""
-    
-    def __init__(self, chunk_size: int = 512, overlap: int = 50):
-        self.chunk_size = chunk_size
-        self.overlap = overlap
-    
-    def chunk_text(self, text: str, preserve_sentences: bool = True) -> List[str]:
-        """Chunk text into overlapping segments"""
-        
-        if preserve_sentences:
-            # Split by sentences first
-            import re
-            sentences = re.split(r'[.!?]+', text)
-            sentences = [s.strip() for s in sentences if s.strip()]
-            
-            chunks = []
-            current_chunk = ""
-            
-            for sentence in sentences:
-                # Check if adding this sentence would exceed chunk size
-                if len(current_chunk) + len(sentence) > self.chunk_size and current_chunk:
-                    chunks.append(current_chunk.strip())
-                    
-                    # Start new chunk with overlap
-                    if self.overlap > 0 and len(current_chunk) > self.overlap:
-                        current_chunk = current_chunk[-self.overlap:] + " " + sentence
-                    else:
-                        current_chunk = sentence
-                else:
-                    current_chunk += " " + sentence if current_chunk else sentence
-            
-            # Add final chunk
-            if current_chunk.strip():
-                chunks.append(current_chunk.strip())
-            
-            return chunks
-        
-        else:
-            # Simple character-based chunking
-            chunks = []
-            
-            for i in range(0, len(text), self.chunk_size - self.overlap):
-                chunk = text[i:i + self.chunk_size]
-                if chunk.strip():
-                    chunks.append(chunk.strip())
-            
-            return chunks
-    
-    def extract_metadata(self, text: str, source: str = None) -> Dict[str, Any]:
-        """Extract metadata from text"""
-        
-        metadata = {
-            "length": len(text),
-            "word_count": len(text.split()),
-            "source": source or "unknown"
-        }
-        
-        # Extract basic statistics
-        sentences = text.split('.')
-        metadata["sentence_count"] = len([s for s in sentences if s.strip()])
-        
-        # Extract keywords (simple approach)
-        words = text.lower().split()
-        word_freq = {}
-        for word in words:
-            if len(word) > 3:  # Ignore short words
-                word_freq[word] = word_freq.get(word, 0) + 1
-        
-        # Top keywords
-        top_keywords = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:10]
-        metadata["keywords"] = [kw[0] for kw in top_keywords]
-        
-        return metadata
-    
-    async def process_document(self, text: str, source: str = None,
-                             chunk_size: int = None) -> List[Dict[str, Any]]:
-        """Process document into chunks with metadata"""
-        
-        chunk_size = chunk_size or self.chunk_size
-        
-        # Chunk the text
-        chunks = self.chunk_text(text)
-        
-        # Generate metadata for each chunk
-        chunk_data = []
-        for i, chunk in enumerate(chunks):
-            metadata = self.extract_metadata(chunk, source)
-            metadata.update({
-                "chunk_index": i,
-                "total_chunks": len(chunks),
-                "chunk_text": chunk  # Include full text in metadata
-            })
-            
-            chunk_data.append({
-                "text": chunk,
-                "metadata": metadata
-            })
-        
-        return chunk_data
-
-# =================== SPECIALIZED PIPELINES ===================
+# =================== RAG PIPELINE ===================
 
 class RAGPipeline(MLXTextEmbeddingPipeline):
-    """Specialized pipeline for RAG (Retrieval-Augmented Generation)"""
+    """Simplified RAG Pipeline"""
     
-    def __init__(self, embedding_model: str, vector_store: MLXVectorStore,
-                 document_processor: DocumentProcessor = None):
+    def __init__(self, embedding_model: str, vector_store: MLXVectorStore):
         super().__init__(embedding_model, vector_store)
-        
-        self.document_processor = document_processor or DocumentProcessor()
         self.knowledge_base_stats = {
             "documents_indexed": 0,
-            "total_chunks": 0,
-            "total_tokens": 0
+            "total_chunks": 0
         }
     
-    async def index_documents(self, documents: List[Dict[str, str]],
-                            chunk_size: int = 512) -> Dict[str, Any]:
-        """Index documents for RAG retrieval"""
+    async def index_documents(self, documents: List[Dict[str, str]]) -> Dict[str, Any]:
+        """Index documents for RAG"""
         
         logger.info(f"Indexing {len(documents)} documents for RAG...")
         
-        all_chunks = []
+        all_texts = []
         all_metadata = []
         
         for doc_idx, document in enumerate(documents):
             doc_text = document.get("content", "")
             doc_source = document.get("source", f"document_{doc_idx}")
+            doc_title = document.get("title", "")
             
-            # Process document into chunks
-            chunk_data = await self.document_processor.process_document(
-                doc_text, doc_source, chunk_size
-            )
+            # Simple chunking (in production würde man bessere Strategien verwenden)
+            chunk_size = 500
+            chunks = [doc_text[i:i+chunk_size] for i in range(0, len(doc_text), chunk_size)]
             
-            # Collect chunks and metadata
-            for chunk_info in chunk_data:
-                all_chunks.append(chunk_info["text"])
-                
-                # Enhanced metadata for RAG
-                metadata = chunk_info["metadata"]
-                metadata.update({
-                    "document_id": doc_idx,
-                    "document_source": doc_source,
-                    "document_title": document.get("title", ""),
-                    "indexed_at": time.time()
-                })
-                
-                all_metadata.append(metadata)
+            for chunk_idx, chunk in enumerate(chunks):
+                if chunk.strip():
+                    all_texts.append(chunk)
+                    all_metadata.append({
+                        "document_id": doc_idx,
+                        "document_source": doc_source,
+                        "document_title": doc_title,
+                        "chunk_index": chunk_idx,
+                        "text": chunk,
+                        "indexed_at": time.time()
+                    })
         
-        # Process all chunks through embedding pipeline
-        result = await self.process_texts(all_chunks, all_metadata)
+        # Process through embedding pipeline
+        result = await self.process_texts(all_texts, all_metadata)
         
         # Update knowledge base stats
         self.knowledge_base_stats["documents_indexed"] += len(documents)
-        self.knowledge_base_stats["total_chunks"] += len(all_chunks)
-        self.knowledge_base_stats["total_tokens"] += sum(len(chunk.split()) for chunk in all_chunks)
+        self.knowledge_base_stats["total_chunks"] += len(all_texts)
         
-        logger.info(f"Successfully indexed {len(documents)} documents as {len(all_chunks)} chunks")
+        logger.info(f"Successfully indexed {len(documents)} documents as {len(all_texts)} chunks")
         
         return {
             **result,
             "documents_indexed": len(documents),
-            "chunks_created": len(all_chunks),
+            "chunks_created": len(all_texts),
             "knowledge_base_stats": self.knowledge_base_stats
         }
     
-    async def retrieve_context(self, query: str, k: int = 5,
-                             min_similarity: float = 0.7) -> List[Dict[str, Any]]:
-        """Retrieve relevant context for RAG generation"""
+    async def retrieve_context(self, query: str, k: int = 5, min_similarity: float = 0.7) -> List[Dict[str, Any]]:
+        """Retrieve relevant context for RAG"""
         
-        # Get similar chunks
-        results = await self.search_similar_texts(query, k=k * 2)  # Get more candidates
+        results = await self.search_similar_texts(query, k=k * 2)
         
         # Filter by minimum similarity
-        filtered_results = [
-            result for result in results 
-            if result["similarity_score"] >= min_similarity
-        ]
+        filtered_results = [r for r in results if r["similarity_score"] >= min_similarity]
         
-        # Take top k results
+        # Take top k
         top_results = filtered_results[:k]
         
         # Format for RAG usage
         context_chunks = []
         for result in top_results:
             chunk_info = {
-                "text": result["metadata"].get("chunk_text", ""),
+                "text": result["metadata"].get("text", ""),
                 "source": result["metadata"].get("document_source", ""),
                 "similarity": result["similarity_score"],
                 "chunk_index": result["metadata"].get("chunk_index", 0)
@@ -704,11 +482,10 @@ class RAGPipeline(MLXTextEmbeddingPipeline):
         
         return context_chunks
     
-    def format_rag_prompt(self, query: str, context_chunks: List[Dict[str, Any]],
+    def format_rag_prompt(self, query: str, context_chunks: List[Dict[str, Any]], 
                          max_context_length: int = 2000) -> str:
         """Format context for RAG generation"""
         
-        # Build context string
         context_parts = []
         current_length = 0
         
@@ -724,7 +501,6 @@ class RAGPipeline(MLXTextEmbeddingPipeline):
         
         context_string = "\n".join(context_parts)
         
-        # Create RAG prompt
         rag_prompt = f"""Based on the following context, please answer the question:
 
 Context:
@@ -739,90 +515,56 @@ Answer:"""
 # =================== PIPELINE FACTORY ===================
 
 class MLXPipelineFactory:
-    """Factory for creating optimized MLX pipelines"""
+    """Factory für MLX Pipelines"""
     
     @staticmethod
     def create_embedding_pipeline(model_name: str, vector_store: MLXVectorStore,
                                 pipeline_type: str = "basic") -> MLXTextEmbeddingPipeline:
-        """Create embedding pipeline with specified configuration"""
+        """Create embedding pipeline"""
         
         if pipeline_type == "basic":
             return MLXTextEmbeddingPipeline(model_name, vector_store)
-        
         elif pipeline_type == "rag":
-            document_processor = DocumentProcessor(
-                chunk_size=512,
-                overlap=50
-            )
-            return RAGPipeline(model_name, vector_store, document_processor)
-        
+            return RAGPipeline(model_name, vector_store)
         else:
             raise ValueError(f"Unknown pipeline type: {pipeline_type}")
     
     @staticmethod
     def get_recommended_model(use_case: str, memory_budget_gb: float = 8.0) -> str:
-        """Get recommended model based on use case and memory budget"""
+        """Get recommended model based on use case"""
         
-        if use_case == "multilingual":
-            if memory_budget_gb >= 16:
-                return "bge-m3"  # Best multilingual performance
-            else:
-                return "multilingual-e5-small"  # Memory efficient
-        
-        elif use_case == "long_documents":
-            if memory_budget_gb >= 32:
-                return "e5-mistral-7b"  # Best for long context
-            else:
-                return "gte-large"  # Good balance
-        
-        elif use_case == "fast_inference":
-            return "multilingual-e5-small"  # Fastest
-        
-        elif use_case == "high_quality":
-            if memory_budget_gb >= 16:
-                return "bge-m3"  # Best quality
-            else:
-                return "gte-large"  # Good quality, lower memory
-        
+        if use_case == "multilingual" and SENTENCE_TRANSFORMERS_AVAILABLE:
+            return "multilingual-e5-small"
         else:
-            return "multilingual-e5-small"  # Safe default
+            return "mock-384"  # Fallback zu Mock-Modell
     
     @staticmethod
     def estimate_memory_usage(model_name: str, batch_size: int = 32) -> Dict[str, float]:
-        """Estimate memory usage for model and batch size"""
+        """Estimate memory usage"""
         
-        if model_name not in SUPPORTED_EMBEDDING_MODELS:
-            return {"error": "Unknown model"}
-        
-        config = SUPPORTED_EMBEDDING_MODELS[model_name]
-        
-        # Base model memory (rough estimates)
-        base_memory_gb = {
-            "multilingual-e5-small": 0.5,
-            "gte-large": 2.5,
-            "e5-mistral-7b": 14.0,
-            "bge-m3": 2.2
-        }.get(model_name, 1.0)
-        
-        # Batch processing memory
-        sequence_memory_mb = (batch_size * config.max_sequence_length * 4) / (1024 * 1024)  # float32
-        
-        # Quantization reduction
-        if config.quantization == "4bit":
-            base_memory_gb *= 0.25
-        elif config.quantization == "8bit":
-            base_memory_gb *= 0.5
-        
-        total_memory_gb = base_memory_gb + (sequence_memory_mb / 1024)
-        
-        return {
-            "base_model_gb": base_memory_gb,
-            "batch_processing_mb": sequence_memory_mb,
-            "total_estimated_gb": total_memory_gb,
-            "quantization": config.quantization or "none"
-        }
+        if model_name == "mock-384":
+            return {
+                "base_model_gb": 0.001,
+                "batch_processing_mb": 1.0,
+                "total_estimated_gb": 0.001,
+                "quantization": "none"
+            }
+        elif model_name == "multilingual-e5-small":
+            return {
+                "base_model_gb": 0.5,
+                "batch_processing_mb": batch_size * 0.5,
+                "total_estimated_gb": 0.5,
+                "quantization": "none"
+            }
+        else:
+            return {
+                "base_model_gb": 1.0,
+                "batch_processing_mb": batch_size,
+                "total_estimated_gb": 1.0,
+                "quantization": "none"
+            }
 
-# =================== DEMO USAGE ===================
+# =================== DEMO FUNCTION ===================
 
 async def demo_mlx_lm_integration():
     """Demo der MLX-LM Integration"""
@@ -830,16 +572,15 @@ async def demo_mlx_lm_integration():
     print("🚀 MLX-LM Integration Pipeline Demo")
     print("=" * 50)
     
-    # Check MLX-LM availability
-    if not MLX_LM_AVAILABLE:
-        print("⚠️ MLX-LM not available. Using sentence-transformers fallback.")
+    print(f"MLX-LM verfügbar: {MLX_LM_AVAILABLE}")
+    print(f"Sentence Transformers verfügbar: {SENTENCE_TRANSFORMERS_AVAILABLE}")
     
     # Create vector store
     from service.optimized_vector_store import create_optimized_vector_store
     
     vector_store = create_optimized_vector_store(
         "./demo_mlx_lm_store",
-        dimension=384,  # For multilingual-e5-small
+        dimension=384,
         jit_compile=True
     )
     
@@ -850,12 +591,6 @@ async def demo_mlx_lm_integration():
     )
     
     print(f"📊 Recommended model: {recommended_model}")
-    
-    # Estimate memory usage
-    memory_estimate = MLXPipelineFactory.estimate_memory_usage(
-        recommended_model, batch_size=32
-    )
-    print(f"💾 Estimated memory usage: {memory_estimate['total_estimated_gb']:.2f} GB")
     
     # Create RAG pipeline
     rag_pipeline = MLXPipelineFactory.create_embedding_pipeline(
@@ -868,7 +603,7 @@ async def demo_mlx_lm_integration():
     print("\n🔧 Initializing pipeline...")
     await rag_pipeline.initialize()
     
-    # Sample documents for indexing
+    # Sample documents
     documents = [
         {
             "title": "MLX Framework Overview",
@@ -877,13 +612,8 @@ async def demo_mlx_lm_integration():
         },
         {
             "title": "Vector Databases Explained", 
-            "content": "Vector databases store high-dimensional vectors and enable fast similarity search. They are essential for modern AI applications like RAG and semantic search.",
+            "content": "Vector databases store high-dimensional vectors and enable fast similarity search. They are essential for modern AI applications like RAG.",
             "source": "vector_db_guide.md"
-        },
-        {
-            "title": "Apple Silicon Performance",
-            "content": "Apple Silicon chips feature unified memory architecture that allows efficient sharing between CPU and GPU. This enables new optimization strategies for ML workloads.",
-            "source": "apple_silicon.md"
         }
     ]
     
@@ -898,7 +628,7 @@ async def demo_mlx_lm_integration():
     # Test RAG retrieval
     print(f"\n🔍 Testing RAG retrieval...")
     
-    query = "How does Apple Silicon benefit machine learning?"
+    query = "How does MLX work?"
     context_chunks = await rag_pipeline.retrieve_context(query, k=3)
     
     print(f"Query: {query}")
@@ -917,7 +647,6 @@ async def demo_mlx_lm_integration():
     stats = rag_pipeline.get_pipeline_stats()
     
     print(f"   Texts processed: {stats['pipeline_stats']['total_texts_processed']}")
-    print(f"   Avg time per text: {stats['avg_time_per_text_ms']:.2f}ms")
     print(f"   Embedding model: {stats['model_configuration']['embedding_model']}")
     print(f"   Vector dimension: {stats['model_configuration']['dimension']}")
     

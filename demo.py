@@ -2,6 +2,7 @@
 """
 Demo script für MLX Vector Database
 Korrigierte Version mit funktionierenden Imports und Operationen
+FIXED: Directory creation issues
 """
 
 import numpy as np
@@ -10,38 +11,73 @@ import time
 from pathlib import Path
 import shutil
 import logging
+import os
 
 # Korrigierte Imports
-from service.optimized_vector_store import MLXVectorStore, MLXVectorStoreConfig
+from service.optimized_vector_store import MLXVectorStore, MLXVectorStoreConfig, ensure_directory_exists
 
 logger = logging.getLogger("mlx_vector_db.demo")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 # Globale Konfiguration für die Demo-Stores
 DEMO_BASE_PATH = Path("~/.mlx_vector_db_demo_stores").expanduser()
-DEMO_BASE_PATH.mkdir(parents=True, exist_ok=True)
+
+def ensure_demo_base_directory():
+    """Stelle sicher, dass das Demo-Basisverzeichnis existiert - FIXED"""
+    try:
+        ensure_directory_exists(DEMO_BASE_PATH)
+        
+        # Test write permissions
+        test_file = DEMO_BASE_PATH / ".write_test"
+        test_file.write_text("test")
+        test_file.unlink()
+        
+        logger.info(f"Demo base directory ready: {DEMO_BASE_PATH}")
+        
+    except Exception as e:
+        logger.error(f"Failed to setup demo base directory: {e}")
+        raise OSError(f"Cannot create or write to demo directory: {DEMO_BASE_PATH}")
 
 def get_demo_store(user_id: str, model_id: str) -> MLXVectorStore:
-    """Hilfsfunktion zum Erstellen/Abrufen einer VectorStore-Instanz für Demos."""
+    """Hilfsfunktion zum Erstellen/Abrufen einer VectorStore-Instanz für Demos - FIXED"""
     store_path = DEMO_BASE_PATH / f"user_{user_id}" / model_id
+    
+    # KRITISCHER FIX: Stelle sicher, dass das Verzeichnis existiert
+    ensure_directory_exists(store_path)
+    
     config = MLXVectorStoreConfig(
         dimension=384,
         metric="cosine",
         enable_hnsw=False,  # Deaktiviert für Demo-Stabilität
         jit_compile=True
     )
+    
+    # Zusätzliche Verifikation
+    if not store_path.exists():
+        raise OSError(f"Failed to create store directory: {store_path}")
+    
     return MLXVectorStore(str(store_path), config=config)
 
 def cleanup_store(store: MLXVectorStore):
-    """Bereinigt einen Store und löscht sein Verzeichnis."""
+    """Bereinigt einen Store und löscht sein Verzeichnis - IMPROVED"""
     store_path_to_delete = store.store_path
     try:
+        # Clear store data first
         store.clear()
+        
+        # Remove directory if it exists
         if store_path_to_delete.exists() and store_path_to_delete.is_dir():
             shutil.rmtree(store_path_to_delete, ignore_errors=True)
-        print(f"🧹 Store-Verzeichnis {store_path_to_delete} bereinigt.")
+            
+        # Verify deletion
+        if store_path_to_delete.exists():
+            logger.warning(f"Directory still exists after cleanup: {store_path_to_delete}")
+        else:
+            print(f"🧹 Store-Verzeichnis {store_path_to_delete} bereinigt.")
+            
     except Exception as e:
-        print(f"Fehler beim Bereinigen von {store_path_to_delete}: {e}")
+        logger.error(f"Fehler beim Bereinigen von {store_path_to_delete}: {e}")
+        print(f"⚠️ Cleanup-Warnung: {e}")
 
 def run_basic_demo():
     """Führt grundlegende Operationen mit der VectorStore-Klasse vor."""
@@ -162,6 +198,7 @@ def run_advanced_demo():
         jit_compile=True
     )
     store_path = DEMO_BASE_PATH / f"user_{user_id}" / model_id
+    ensure_directory_exists(store_path)
     store = MLXVectorStore(str(store_path), config=config)
     
     dim = store.config.dimension
@@ -275,11 +312,14 @@ def run_mlx_integration_demo():
     print(f"✅ MLX Integration Demo abgeschlossen!")
 
 def main():
-    """Führt alle Demo-Funktionen aus."""
+    """Führt alle Demo-Funktionen aus - FIXED VERSION"""
     try:
         print("🍎 MLX Vector Database - Vollständige Demo")
         print("⚡ Optimiert für Apple Silicon")
         print("=" * 60)
+        
+        # NEUER FIX: Stelle sicher, dass Basisverzeichnis existiert
+        ensure_demo_base_directory()
         
         # MLX System Test
         print("🔧 Teste MLX System...")
@@ -305,6 +345,7 @@ def main():
         print(f"   1. Stellen Sie sicher, dass MLX installiert ist: pip install mlx")
         print(f"   2. Verwenden Sie Apple Silicon (M1/M2/M3)")
         print(f"   3. Prüfen Sie die Python-Version (>=3.9)")
+        print(f"   4. Prüfen Sie Schreibrechte für: {DEMO_BASE_PATH}")
 
 if __name__ == "__main__":
     main()

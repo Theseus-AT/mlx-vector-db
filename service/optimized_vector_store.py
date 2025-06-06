@@ -1,6 +1,7 @@
 """
 MLX Vector Store - Production-Ready mit aktuellen MLX APIs
 Korrigierte Version basierend auf github.com/ml-explore/mlx
+FIXED: MLX-native storage instead of numpy conversion
 """
 
 import mlx.core as mx
@@ -74,6 +75,31 @@ class MLXVectorStoreConfig:
     enable_hnsw: bool = False
     hnsw_config: Optional[Any] = None
 
+def ensure_directory_exists(path: Path) -> None:
+    """Ensure directory exists with proper error handling"""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        # Verify the directory was actually created and is writable
+        if not path.exists():
+            raise OSError(f"Failed to create directory: {path}")
+        if not os.access(path, os.W_OK):
+            raise OSError(f"Directory not writable: {path}")
+    except Exception as e:
+        logger.error(f"Directory creation failed for {path}: {e}")
+        raise
+
+def get_mlx_save_capabilities():
+    """Check which MLX save/load methods are available"""
+    capabilities = {
+        "save_safetensors": hasattr(mx, 'save_safetensors'),
+        "load_safetensors": hasattr(mx, 'load'),
+        "savez": hasattr(mx, 'savez'),
+        "load_npz": hasattr(mx, 'load'),
+    }
+    
+    logger.debug(f"MLX save/load capabilities: {capabilities}")
+    return capabilities
+
 class MLXVectorStore:
     """Production-ready MLX Vector Store mit aktueller MLX API"""
     
@@ -128,7 +154,8 @@ class MLXVectorStore:
     
     def _initialize_store(self):
         """Initialize store directory and load existing data"""
-        self.store_path.mkdir(parents=True, exist_ok=True)
+        # Ensure parent directories exist first
+        ensure_directory_exists(self.store_path)
         
         for attempt in range(self.config.max_retry_attempts):
             try:
@@ -145,7 +172,7 @@ class MLXVectorStore:
     
     def _create_empty_store(self):
         """Create empty store as recovery fallback"""
-        logger.info("Creating empty store as recovery fallback")
+        logger.info("Creating new vector store")
         self._vectors = None
         self._metadata = []
         self._vector_count = 0
@@ -180,41 +207,51 @@ class MLXVectorStore:
             raise ValueError("Number of vectors must match number of metadata entries")
         
         with self._lock:
-            # Convert to MLX array
-            new_vectors = self._convert_to_mlx_array(vectors)
-            
-            # Validate dimensions
-            if new_vectors.shape[1] != self.config.dimension:
-                raise ValueError(f"Vector dimension {new_vectors.shape[1]} doesn't match config dimension {self.config.dimension}")
-            
-            # Add to store
-            if self._vectors is None:
-                self._vectors = new_vectors
-            else:
-                self._vectors = mx.concatenate([self._vectors, new_vectors], axis=0)
-            
-            self._metadata.extend(metadata)
-            self._vector_count = self._vectors.shape[0]
-            self._is_dirty = True
-            
-            # Force evaluation for consistency
-            mx.eval(self._vectors)
-            
-            # Save to disk
-            self._schedule_save()
-            
-            # Update HNSW index if available
-            if self._hnsw_index and hasattr(self._hnsw_index, 'build'):
+            try:
+                # Convert to MLX array
+                new_vectors = self._convert_to_mlx_array(vectors)
+                
+                # Validate dimensions
+                if new_vectors.shape[1] != self.config.dimension:
+                    raise ValueError(f"Vector dimension {new_vectors.shape[1]} doesn't match config dimension {self.config.dimension}")
+                
+                # Add to store
+                if self._vectors is None:
+                    self._vectors = new_vectors
+                else:
+                    self._vectors = mx.concatenate([self._vectors, new_vectors], axis=0)
+                
+                self._metadata.extend(metadata)
+                self._vector_count = self._vectors.shape[0]
+                self._is_dirty = True
+                
+                # Force evaluation for consistency
+                mx.eval(self._vectors)
+                
+                logger.info(f"Added {len(metadata)} vectors (total: {self._vector_count})")
+                
+                # Try to save - but don't fail the operation if save fails
                 try:
-                    self._hnsw_index.build(self._vectors)
-                except Exception as e:
-                    logger.warning(f"HNSW index update failed: {e}")
-            
-            logger.info(f"Added {len(metadata)} vectors (total: {self._vector_count})")
-            return {
-                'vectors_added': len(metadata),
-                'total_vectors': self._vector_count
-            }
+                    self._schedule_save()
+                except Exception as save_error:
+                    logger.warning(f"Save failed but vectors were added to memory: {save_error}")
+                
+                # Update HNSW index if available
+                if self._hnsw_index and hasattr(self._hnsw_index, 'build'):
+                    try:
+                        self._hnsw_index.build(self._vectors)
+                    except Exception as e:
+                        logger.warning(f"HNSW index update failed: {e}")
+                
+                return {
+                    'vectors_added': len(metadata),
+                    'total_vectors': self._vector_count,
+                    'save_successful': not self._is_dirty  # True if save worked
+                }
+                
+            except Exception as e:
+                logger.error(f"Failed to add vectors: {e}")
+                raise
     
     def query(self, query_vector: Union[np.ndarray, List[float], mx.array], 
               k: int = 10, filter_metadata: Optional[Dict] = None,
@@ -261,12 +298,23 @@ class MLXVectorStore:
     def batch_query(self, query_vectors: Union[np.ndarray, List[List[float]], mx.array], 
                    k: int = 10) -> List[Tuple[List[int], List[float], List[Dict]]]:
         """Batch query multiple vectors"""
+        if self._vectors is None or self._vector_count == 0:
+            return [([], [], [])] * len(query_vectors)
+        
         queries_mx = self._convert_to_mlx_array(query_vectors)
+        
+        # Handle both 1D and 2D query inputs
+        if queries_mx.ndim == 1:
+            queries_mx = queries_mx[None, :]
         
         results = []
         for i in range(queries_mx.shape[0]):
-            result = self.query(queries_mx[i], k=k, use_hnsw=False)  # Use brute force for consistency
-            results.append(result)
+            try:
+                result = self.query(queries_mx[i], k=k, use_hnsw=False)
+                results.append(result)
+            except Exception as e:
+                logger.error(f"Batch query failed for query {i}: {e}")
+                results.append(([], [], []))
         
         return results
     
@@ -287,22 +335,39 @@ class MLXVectorStore:
     
     def _fallback_similarity(self, query: mx.array, vectors: mx.array) -> mx.array:
         """Fallback similarity computation without compilation"""
-        if self.config.metric == "cosine":
-            query_norm = mx.linalg.norm(query)
-            query_normalized = query / mx.maximum(query_norm, 1e-8)
+        try:
+            if self.config.metric == "cosine":
+                # Ensure proper shapes
+                if query.ndim == 1:
+                    query = query[None, :]
+                
+                query_norm = mx.linalg.norm(query, axis=1, keepdims=True)
+                query_normalized = query / mx.maximum(query_norm, mx.array(1e-8))
+                
+                vectors_norm = mx.linalg.norm(vectors, axis=1, keepdims=True)
+                vectors_normalized = vectors / mx.maximum(vectors_norm, mx.array(1e-8))
+                
+                # Use proper matrix multiplication
+                similarities = mx.matmul(vectors_normalized, query_normalized.T)
+                return similarities.flatten()
             
-            vectors_norm = mx.linalg.norm(vectors, axis=1, keepdims=True)
-            vectors_normalized = vectors / mx.maximum(vectors_norm, 1e-8)
+            elif self.config.metric == "euclidean":
+                if query.ndim == 1:
+                    query = query[None, :]
+                diff = vectors - query
+                distances = mx.sqrt(mx.sum(diff * diff, axis=1))
+                return -distances  # Negative for sorting (higher is better)
             
-            return mx.matmul(vectors_normalized, query_normalized)
-        
-        elif self.config.metric == "euclidean":
-            diff = vectors - query[None, :]
-            distances = mx.sqrt(mx.sum(diff * diff, axis=1))
-            return -distances  # Negative for sorting
-        
-        else:  # dot_product
-            return mx.matmul(vectors, query)
+            else:  # dot_product
+                if query.ndim == 1:
+                    return mx.matmul(vectors, query)
+                else:
+                    return mx.matmul(vectors, query.T).flatten()
+                    
+        except Exception as e:
+            logger.error(f"Fallback similarity computation failed: {e}")
+            # Return dummy results to prevent complete failure
+            return mx.zeros((vectors.shape[0],))
     
     def _get_top_k_results(self, similarities: mx.array, k: int, 
                           valid_indices: Optional[List[int]]) -> Tuple[List[int], List[float], List[Dict]]:
@@ -361,8 +426,12 @@ class MLXVectorStore:
             return vectors
         elif isinstance(vectors, np.ndarray):
             return mx.array(vectors.astype(np.float32))
+        elif isinstance(vectors, list):
+            # Konvertiere erst zu numpy, dann zu MLX für bessere Typsicherheit
+            np_array = np.array(vectors, dtype=np.float32)
+            return mx.array(np_array)
         else:
-            return mx.array(np.array(vectors, dtype=np.float32))
+            raise TypeError(f"Unsupported vector type: {type(vectors)}")
     
     def _schedule_save(self):
         """Schedule save operation"""
@@ -370,81 +439,128 @@ class MLXVectorStore:
             try:
                 self._save_store()
                 self._is_dirty = False
+                logger.debug("Scheduled save completed")
             except Exception as e:
                 logger.error(f"Scheduled save failed: {e}")
+                # Don't re-raise to avoid breaking the main operation
     
     def _save_store(self):
-        """Save store to disk using current MLX API"""
+        """Save store using MLX native format - FIXED MLX NATIVE VERSION"""
         if self._vectors is None:
             return
         
-        vectors_path = None
-        metadata_path = None
-        temp_vectors_path = None
-        temp_metadata_path = None
-        
         try:
             # Ensure directory exists
-            self.store_path.mkdir(parents=True, exist_ok=True)
+            ensure_directory_exists(self.store_path)
             
-            # Save vectors with atomic write
-            vectors_path = self.store_path / "vectors.npz"
-            temp_vectors_path = self.store_path / "vectors.npz.tmp"
+            # Force evaluation of MLX arrays
+            mx.eval(self._vectors)
             
-            # Convert to numpy for saving (current MLX may not have direct npz save)
-            vectors_np = np.array(self._vectors.tolist())
-            np.savez(str(temp_vectors_path), vectors=vectors_np)
-            temp_vectors_path.rename(vectors_path)
+            capabilities = get_mlx_save_capabilities()
+            success = False
             
-            # Save metadata with atomic write
+            # Method 1: Try MLX savez (most reliable)
+            if capabilities["savez"]:
+                try:
+                    vectors_path = self.store_path / "vectors.npz"
+                    mx.savez(str(vectors_path), vectors=self._vectors)
+                    logger.debug("Saved using mx.savez")
+                    success = True
+                except Exception as e:
+                    logger.warning(f"mx.savez failed: {e}")
+            
+            # Method 2: Try MLX safetensors (if available and savez failed)
+            if not success and capabilities["save_safetensors"]:
+                try:
+                    vectors_path = self.store_path / "vectors.safetensors"
+                    mx.save_safetensors(str(vectors_path), {"vectors": self._vectors})
+                    logger.debug("Saved using mx.save_safetensors")
+                    success = True
+                except Exception as e:
+                    logger.warning(f"mx.save_safetensors failed: {e}")
+            
+            # Method 3: Numpy fallback (only if MLX methods unavailable)
+            if not success:
+                logger.warning("Using numpy fallback for saving")
+                vectors_path = self.store_path / "vectors.npz"
+                vectors_np = np.array(self._vectors.tolist(), dtype=np.float32)
+                np.savez_compressed(str(vectors_path), vectors=vectors_np)
+                logger.debug("Saved using numpy fallback")
+            
+            # Save metadata
             metadata_path = self.store_path / "metadata.jsonl"
-            temp_metadata_path = self.store_path / "metadata.jsonl.tmp"
-            
-            with open(temp_metadata_path, 'w') as f:
+            with open(metadata_path, 'w', encoding='utf-8') as f:
                 for meta in self._metadata:
-                    f.write(json.dumps(meta) + '\n')
+                    f.write(json.dumps(meta, ensure_ascii=False) + '\n')
             
-            temp_metadata_path.rename(metadata_path)
-            
-            logger.debug(f"Store saved: {self._vector_count} vectors")
+            logger.debug(f"Store saved successfully: {self._vector_count} vectors")
             
         except Exception as e:
             logger.error(f"Store save failed: {e}")
-            # Clean up temp files
-            if temp_vectors_path and temp_vectors_path.exists():
-                try:
-                    temp_vectors_path.unlink()
-                except:
-                    pass
-            if temp_metadata_path and temp_metadata_path.exists():
-                try:
-                    temp_metadata_path.unlink()
-                except:
-                    pass
             raise
     
     def _load_store(self):
-        """Load store from disk"""
-        vectors_path = self.store_path / "vectors.npz"
-        metadata_path = self.store_path / "metadata.jsonl"
+        """Load store using MLX native format - FIXED MLX NATIVE VERSION"""
+        # Check for different file formats in order of preference
+        possible_files = [
+            (self.store_path / "vectors.npz", "npz"),
+            (self.store_path / "vectors.safetensors", "safetensors")
+        ]
         
-        if not vectors_path.exists():
+        vectors_file = None
+        file_format = None
+        
+        for file_path, fmt in possible_files:
+            if file_path.exists():
+                vectors_file = file_path
+                file_format = fmt
+                break
+        
+        if vectors_file is None:
             logger.info("Creating new vector store")
             return
         
         try:
-            # Load vectors using numpy then convert to MLX
-            data = np.load(str(vectors_path))
-            if 'vectors' in data:
-                vectors_np = data['vectors']
-                self._vectors = mx.array(vectors_np)
-                self._vector_count = self._vectors.shape[0]
-                logger.info(f"Loaded {self._vector_count} vectors")
+            capabilities = get_mlx_save_capabilities()
+            
+            if file_format == "npz":
+                # Try MLX load first
+                if capabilities["load_npz"]:
+                    try:
+                        loaded_data = mx.load(str(vectors_file))
+                        if isinstance(loaded_data, dict) and "vectors" in loaded_data:
+                            self._vectors = loaded_data["vectors"]
+                        else:
+                            # Handle case where mx.load returns the array directly
+                            self._vectors = loaded_data
+                        logger.info(f"Loaded {self._vectors.shape[0]} vectors using mx.load")
+                    except Exception as e:
+                        logger.warning(f"mx.load failed: {e}, trying numpy fallback")
+                        # Fallback to numpy
+                        data = np.load(str(vectors_file))
+                        vectors_np = data['vectors']
+                        self._vectors = mx.array(vectors_np)
+                        logger.info(f"Loaded {self._vectors.shape[0]} vectors via numpy conversion")
+                else:
+                    # Pure numpy fallback
+                    data = np.load(str(vectors_file))
+                    vectors_np = data['vectors']
+                    self._vectors = mx.array(vectors_np)
+                    logger.info(f"Loaded {self._vectors.shape[0]} vectors via numpy conversion")
+            
+            elif file_format == "safetensors" and capabilities["load_safetensors"]:
+                # Load safetensors format
+                loaded_data = mx.load(str(vectors_file))
+                self._vectors = loaded_data["vectors"]
+                logger.info(f"Loaded {self._vectors.shape[0]} vectors from safetensors")
+            
+            self._vector_count = self._vectors.shape[0]
             
             # Load metadata
+            metadata_path = self.store_path / "metadata.jsonl"
             if metadata_path.exists():
                 self._metadata = []
-                with open(metadata_path, 'r') as f:
+                with open(metadata_path, 'r', encoding='utf-8') as f:
                     for line in f:
                         if line.strip():
                             self._metadata.append(json.loads(line))

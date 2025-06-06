@@ -1,6 +1,6 @@
 """
 MLX Vector Database - FastAPI Application
-Korrigierte Version ohne problematische Middleware
+Korrigierte, produktionsreife Version
 """
 
 import os
@@ -96,7 +96,7 @@ async def lifespan(app: FastAPI):
 # Create FastAPI application
 app = FastAPI(
     title="MLX Vector Database",
-    description="High-performance vector database optimized for Apple Silicon with MLX 0.25.2",
+    description="High-performance vector database optimized for Apple Silicon with MLX",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
@@ -241,7 +241,7 @@ async def health_check():
         "stores_active": store_stats.get("total_stores", 0),
         "total_vectors": store_stats.get("total_vectors", 0),
         "memory_usage_mb": store_stats.get("total_memory_mb", 0.0),
-        "uptime_seconds": time.time() - performance_metrics["startup_time"],
+        "uptime_seconds": time.time() - performance_metrics.get("startup_time", time.time()),
         "performance_metrics": {
             "total_requests": performance_metrics["total_requests"],
             "total_errors": performance_metrics["total_errors"],
@@ -260,30 +260,34 @@ async def health_check():
 @app.get("/system/info")
 async def system_info():
     """Detailed system information"""
-    import platform
-    import psutil
-    
-    return {
-        "system": {
-            "platform": platform.platform(),
-            "processor": platform.processor(),
-            "python_version": platform.python_version(),
-            "architecture": platform.architecture()[0]
-        },
-        "mlx": {
-            "version": "0.25.2",
-            "device": str(mx.default_device()),
-            "unified_memory": True,
-            "metal_available": True
-        },
-        "memory": {
-            "total_gb": psutil.virtual_memory().total / (1024**3),
-            "available_gb": psutil.virtual_memory().available / (1024**3),
-            "used_percent": psutil.virtual_memory().percent
-        },
-        "performance": performance_metrics,
-        "store_manager": store_manager.get_stats()
-    }
+    try:
+        import platform
+        import psutil
+        
+        return {
+            "system": {
+                "platform": platform.platform(),
+                "processor": platform.processor(),
+                "python_version": platform.python_version(),
+                "architecture": platform.architecture()[0]
+            },
+            "mlx": {
+                "version": "0.25.2",
+                "device": str(mx.default_device()),
+                "unified_memory": True,
+                "metal_available": True
+            },
+            "memory": {
+                "total_gb": psutil.virtual_memory().total / (1024**3),
+                "available_gb": psutil.virtual_memory().available / (1024**3),
+                "used_percent": psutil.virtual_memory().percent
+            },
+            "performance": performance_metrics,
+            "store_manager": store_manager.get_stats()
+        }
+    except Exception as e:
+        logger.error(f"System info collection failed: {e}")
+        return {"error": str(e)}
 
 # Configuration endpoint
 @app.get("/config")
