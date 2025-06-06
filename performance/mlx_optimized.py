@@ -8,6 +8,8 @@ from typing import Tuple, List, Dict
 import logging
 import threading
 import time
+# Zeile 10: threading fehlt
+import threading  # Füge dies zu den Imports hinzu
 
 logger = logging.getLogger("mlx_vector_db.optimized")
 

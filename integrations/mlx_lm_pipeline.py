@@ -29,7 +29,7 @@ logger = logging.getLogger("mlx_lm_integration")
 
 # MLX-LM Imports (wenn verfügbar)
 try:
-    from mlx_lm import load, generate
+    from mlx_lm_pipeline import load, generate
     from mlx_lm.utils import load_config
     # KORRIGIERT: 'ModelType' ist kein gültiger Export aus mlx_lm.models und wird entfernt.
     # from mlx_lm.models import ModelType 

@@ -16,6 +16,13 @@ import redis.asyncio as redis
 from fastapi import Request, Response, HTTPException
 from fastapi.responses import JSONResponse
 import json
+# Zeile 235: os ist nicht importiert
+import os  # Füge dies zu den Imports hinzu
+
+# Bei der rate_limiter Initialisierung
+rate_limiter = ProductionRateLimiter(
+    redis_url=os.getenv("REDIS_URL")  # os wurde nicht importiert
+)
 
 logger = logging.getLogger("mlx_rate_limiter")
 
