@@ -1,6 +1,6 @@
 """
 Optimized FastAPI Vector Operations
-Integrated with MLX Vector Store for maximum performance
+Korrigierte Version mit funktionierendem Store Manager
 """
 
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
@@ -35,7 +35,7 @@ class VectorStoreManager:
     
     async def get_store(self, user_id: str, model_id: str, 
                        config: Optional[MLXVectorStoreConfig] = None) -> MLXVectorStore:
-        """Get or create vector store with async initialization"""
+        """Get or create vector store with proper initialization"""
         store_key = self.get_store_key(user_id, model_id)
         
         if store_key not in self._stores:
@@ -44,7 +44,7 @@ class VectorStoreManager:
             
             store_path = f"~/.team_mind_data/vector_stores/{user_id}/{model_id}"
             
-            # Initialize store in thread pool
+            # Create store synchronously to avoid async issues
             loop = asyncio.get_event_loop()
             store = await loop.run_in_executor(
                 self._executor, 
@@ -54,16 +54,57 @@ class VectorStoreManager:
             self._stores[store_key] = store
             self._configs[store_key] = config
             
-            logger.info(f"✅ Initialized MLX store for {user_id}/{model_id}")
+            logger.info(f"✅ Initialized store for {user_id}/{model_id}")
         
         return self._stores[store_key]
+    
+    async def create_store(self, user_id: str, model_id: str, 
+                          config: Optional[MLXVectorStoreConfig] = None) -> Dict[str, Any]:
+        """Create a new store (used by admin endpoints)"""
+        store_key = self.get_store_key(user_id, model_id)
+        
+        if store_key in self._stores:
+            raise ValueError(f"Store already exists: {user_id}/{model_id}")
+        
+        # Create new store
+        store = await self.get_store(user_id, model_id, config)
+        
+        return {
+            'success': True,
+            'user_id': user_id,
+            'model_id': model_id,
+            'store_key': store_key
+        }
+    
+    async def delete_store(self, user_id: str, model_id: str) -> Dict[str, Any]:
+        """Delete a store"""
+        store_key = self.get_store_key(user_id, model_id)
+        
+        if store_key not in self._stores:
+            raise ValueError(f"Store not found: {user_id}/{model_id}")
+        
+        # Clear and remove store
+        store = self._stores[store_key]
+        store.clear()
+        
+        del self._stores[store_key]
+        if store_key in self._configs:
+            del self._configs[store_key]
+        
+        return {
+            'success': True,
+            'message': f"Store {user_id}/{model_id} deleted"
+        }
     
     async def warmup_all_stores(self):
         """Warm up all active stores for optimal performance"""
         for store_key, store in self._stores.items():
-            logger.info(f"🔥 Warming up store: {store_key}")
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(self._executor, store._warmup_kernels)
+            try:
+                logger.info(f"🔥 Warming up store: {store_key}")
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(self._executor, store._warmup_kernels)
+            except Exception as e:
+                logger.warning(f"Warmup failed for {store_key}: {e}")
     
     def get_stats(self) -> Dict[str, Any]:
         """Get aggregate statistics for all stores"""
@@ -72,9 +113,12 @@ class VectorStoreManager:
         store_count = len(self._stores)
         
         for store in self._stores.values():
-            stats = store.get_stats()
-            total_vectors += stats.get('vector_count', 0)
-            total_memory += stats.get('memory_usage_mb', 0)
+            try:
+                stats = store.get_stats()
+                total_vectors += stats.get('vector_count', 0)
+                total_memory += stats.get('memory_usage_mb', 0)
+            except Exception as e:
+                logger.warning(f"Failed to get stats from store: {e}")
         
         return {
             'total_stores': store_count,
@@ -104,7 +148,6 @@ class BatchQueryResponse(BaseModel):
     total_queries: int
     avg_query_time_ms: float
 
-
 @router.post("/add", response_model=VectorAddResponse)
 async def add_vectors(
     request: VectorAddRequest,
@@ -131,7 +174,7 @@ async def add_vectors(
         # Convert to numpy for MLX optimization
         vectors_np = np.array(request.vectors, dtype=np.float32)
         
-        # Add vectors in thread pool
+        # Add vectors in thread pool to avoid blocking
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             store_manager._executor,
@@ -150,7 +193,6 @@ async def add_vectors(
     except Exception as e:
         logger.error(f"Error adding vectors: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to add vectors: {str(e)}")
-
 
 @router.post("/query", response_model=VectorQueryResponse)  
 async def query_vectors(
@@ -184,18 +226,18 @@ async def query_vectors(
         if isinstance(results, tuple) and len(results) == 3:
             indices, distances, metadata_list = results
             for i, (idx, dist, meta) in enumerate(zip(indices, distances, metadata_list)):
-                similarity_score = max(0, 1.0 - dist) if hasattr(store.config, 'metric') and store.config.metric == "cosine" else -dist
+                # Calculate similarity score based on metric
+                if hasattr(store.config, 'metric') and store.config.metric == "cosine":
+                    similarity_score = max(0, 1.0 - dist)
+                elif store.config.metric == "euclidean":
+                    similarity_score = 1.0 / (1.0 + dist)  # Convert distance to similarity
+                else:
+                    similarity_score = max(0, -dist)  # For dot product
+                
                 formatted_results.append({
                     "metadata": meta,
                     "similarity_score": float(similarity_score),
-                    "rank": i + 1
-                })
-        else:
-            # Legacy format compatibility
-            for i, (metadata, score) in enumerate(results):
-                formatted_results.append({
-                    "metadata": metadata,
-                    "similarity_score": float(score),
+                    "distance": float(dist),
                     "rank": i + 1
                 })
         
@@ -210,7 +252,6 @@ async def query_vectors(
     except Exception as e:
         logger.error(f"Error querying vectors: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
-
 
 @router.post("/batch_query", response_model=BatchQueryResponse)
 async def batch_query_vectors(
@@ -227,7 +268,7 @@ async def batch_query_vectors(
         if not request.queries:
             raise HTTPException(status_code=400, detail="Query vectors required")
         
-        # Process batch queries
+        # Process batch queries in thread pool
         loop = asyncio.get_event_loop()
         batch_results = await loop.run_in_executor(
             store_manager._executor,
@@ -238,24 +279,25 @@ async def batch_query_vectors(
         formatted_batch_results = []
         for query_results in batch_results:
             formatted_query_results = []
+            
             # Handle different return formats
             if isinstance(query_results, tuple) and len(query_results) == 3:
                 indices, distances, metadata_list = query_results
                 for i, (idx, dist, meta) in enumerate(zip(indices, distances, metadata_list)):
-                    similarity_score = max(0, 1.0 - dist) if hasattr(store.config, 'metric') and store.config.metric == "cosine" else -dist
+                    if hasattr(store.config, 'metric') and store.config.metric == "cosine":
+                        similarity_score = max(0, 1.0 - dist)
+                    elif store.config.metric == "euclidean":
+                        similarity_score = 1.0 / (1.0 + dist)
+                    else:
+                        similarity_score = max(0, -dist)
+                    
                     formatted_query_results.append({
                         "metadata": meta,
                         "similarity_score": float(similarity_score),
+                        "distance": float(dist),
                         "rank": i + 1
                     })
-            else:
-                # Legacy format
-                for i, (metadata, score) in enumerate(query_results):
-                    formatted_query_results.append({
-                        "metadata": metadata,
-                        "similarity_score": float(score),
-                        "rank": i + 1
-                    })
+            
             formatted_batch_results.append(formatted_query_results)
         
         total_processing_time = (time.time() - start_time) * 1000
@@ -271,7 +313,6 @@ async def batch_query_vectors(
         logger.error(f"Error in batch query: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Batch query failed: {str(e)}")
 
-
 @router.get("/count")
 async def get_vector_count(
     user_id: str,
@@ -284,8 +325,8 @@ async def get_vector_count(
         stats = store.get_stats()
         return {"count": stats.get('vector_count', 0)}
     except Exception as e:
+        logger.error(f"Error getting vector count: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.get("/stats")
 async def get_store_stats(
@@ -308,8 +349,8 @@ async def get_store_stats(
         }
         
     except Exception as e:
+        logger.error(f"Error getting store stats: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.get("/health")
 async def health_check():
@@ -324,11 +365,40 @@ async def health_check():
             "memory_usage_mb": global_stats['total_memory_mb']
         }
     except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
         return {
             "status": "unhealthy", 
             "error": str(e)
         }
 
+@router.post("/benchmark")
+async def run_benchmark(
+    user_id: str,
+    model_id: str,
+    num_vectors: int = 1000,
+    num_queries: int = 100,
+    api_key: str = Depends(verify_api_key)
+):
+    """Run performance benchmark on the vector store"""
+    try:
+        store = await store_manager.get_store(user_id, model_id)
+        
+        # Run benchmark in thread pool
+        loop = asyncio.get_event_loop()
+        results = await loop.run_in_executor(
+            store_manager._executor,
+            lambda: benchmark_vector_store(store, num_vectors, num_queries)
+        )
+        
+        return {
+            "benchmark_results": results,
+            "mlx_optimized": True,
+            "performance_target": "1000+ QPS"
+        }
+        
+    except Exception as e:
+        logger.error(f"Benchmark failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Benchmark failed: {str(e)}")
 
 # Background tasks
 async def optimize_store_background(store: MLXVectorStore):
@@ -341,7 +411,6 @@ async def optimize_store_background(store: MLXVectorStore):
     except Exception as e:
         logger.error(f"Store optimization failed: {e}")
 
-
 # Startup warmup
 @router.on_event("startup")
 async def startup_warmup():
@@ -349,7 +418,6 @@ async def startup_warmup():
     logger.info("🚀 Starting MLX Vector API...")
     await store_manager.warmup_all_stores()
     logger.info("✅ MLX Vector API ready")
-
 
 def benchmark_vector_store(store: MLXVectorStore, num_vectors: int = 1000, num_queries: int = 100) -> Dict[str, Any]:
     """Simple benchmark function"""
@@ -381,32 +449,3 @@ def benchmark_vector_store(store: MLXVectorStore, num_vectors: int = 1000, num_q
         
     except Exception as e:
         return {"error": str(e)}
-
-
-@router.post("/benchmark")
-async def run_benchmark(
-    user_id: str,
-    model_id: str,
-    num_vectors: int = 1000,
-    num_queries: int = 100,
-    api_key: str = Depends(verify_api_key)
-):
-    """Run performance benchmark on the vector store"""
-    try:
-        store = await store_manager.get_store(user_id, model_id)
-        
-        # Run benchmark in thread pool
-        loop = asyncio.get_event_loop()
-        results = await loop.run_in_executor(
-            store_manager._executor,
-            lambda: benchmark_vector_store(store, num_vectors, num_queries)
-        )
-        
-        return {
-            "benchmark_results": results,
-            "mlx_optimized": True,
-            "performance_target": "1000+ QPS"
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Benchmark failed: {str(e)}")

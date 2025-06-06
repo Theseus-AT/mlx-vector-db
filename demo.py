@@ -1,9 +1,9 @@
-# demo.py - Korrigierte Imports am Anfang der Datei
 #!/usr/bin/env python3
 """
-Demo script for MLX Vector Database
-Demonstrates basic functionality and usage patterns using the VectorStore class.
+Demo script für MLX Vector Database
+Korrigierte Version mit funktionierenden Imports und Operationen
 """
+
 import numpy as np
 import mlx.core as mx
 import time
@@ -11,9 +11,8 @@ from pathlib import Path
 import shutil
 import logging
 
-# Standardisierte Imports - KORRIGIERT
-from service.optimized_vector_store import MLXVectorStore as VectorStore, MLXVectorStoreConfig
-from performance.hnsw_index import AdaptiveHNSWConfig
+# Korrigierte Imports
+from service.optimized_vector_store import MLXVectorStore, MLXVectorStoreConfig
 
 logger = logging.getLogger("mlx_vector_db.demo")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -22,66 +21,56 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 DEMO_BASE_PATH = Path("~/.mlx_vector_db_demo_stores").expanduser()
 DEMO_BASE_PATH.mkdir(parents=True, exist_ok=True)
 
-# KORRIGIERT: Der 'metric'-Parameter wurde aus der HNSW-Konfiguration entfernt,
-# da dieser von der VectorStore-Konfiguration geerbt werden sollte.
-demo_vs_config = MLXVectorStoreConfig(
-    dimension=384,
-    metric="cosine",
-    enable_hnsw=True,
-    hnsw_config=AdaptiveHNSWConfig(
-        M=16,
-        ef_construction=100,
-        ef_search=50
-    )
-)
-
-def get_demo_store(user_id: str, model_id: str) -> VectorStore:
+def get_demo_store(user_id: str, model_id: str) -> MLXVectorStore:
     """Hilfsfunktion zum Erstellen/Abrufen einer VectorStore-Instanz für Demos."""
     store_path = DEMO_BASE_PATH / f"user_{user_id}" / model_id
-    # Stelle sicher, dass die Konfiguration übergeben wird, falls der Store neu erstellt wird.
-    return VectorStore(str(store_path), config=demo_vs_config)
+    config = MLXVectorStoreConfig(
+        dimension=384,
+        metric="cosine",
+        enable_hnsw=False,  # Deaktiviert für Demo-Stabilität
+        jit_compile=True
+    )
+    return MLXVectorStore(str(store_path), config=config)
 
-def cleanup_store(store: VectorStore):
+def cleanup_store(store: MLXVectorStore):
     """Bereinigt einen Store und löscht sein Verzeichnis."""
     store_path_to_delete = store.store_path
     try:
         store.clear()
         if store_path_to_delete.exists() and store_path_to_delete.is_dir():
-            shutil.rmtree(store_path_to_delete)
+            shutil.rmtree(store_path_to_delete, ignore_errors=True)
         print(f"🧹 Store-Verzeichnis {store_path_to_delete} bereinigt.")
     except Exception as e:
         print(f"Fehler beim Bereinigen von {store_path_to_delete}: {e}")
 
 def run_basic_demo():
     """Führt grundlegende Operationen mit der VectorStore-Klasse vor."""
-    print("🧠 MLX Vector Database Demo (mit VectorStore Klasse)")
+    print("🧠 MLX Vector Database Demo")
     print("=" * 50)
     
-    user_id = "demo_user_v2"
-    model_id = "mistral_v2"
+    user_id = "demo_user"
+    model_id = "test_model"
     store = get_demo_store(user_id, model_id)
 
-    print(f"📁 Store wird initialisiert/geladen für {user_id}/{model_id} unter {store.store_path}")
-    if store.store_path.exists():
-        print(f"✅ Store-Verzeichnis existiert.")
+    print(f"📁 Store wird initialisiert für {user_id}/{model_id} unter {store.store_path}")
 
     # Vektoren hinzufügen
     print(f"➕ Füge Beispiel-Vektoren hinzu...")
-    vecs_np = np.random.rand(5, store.config.dimension).astype(np.float32)
-    meta = [{"id": f"chunk_{i}", "source": "demo", "content": f"Sample content {i}"} for i in range(vecs_np.shape[0])]
+    vectors_np = np.random.rand(10, store.config.dimension).astype(np.float32)
+    metadata = [{"id": f"chunk_{i}", "source": "demo", "content": f"Sample content {i}"} for i in range(vectors_np.shape[0])]
     
     start_time = time.time()
-    store.add_vectors(vecs_np, meta)
+    result = store.add_vectors(vectors_np, metadata)
     add_time = time.time() - start_time
-    print(f"   {vecs_np.shape[0]} Vektoren hinzugefügt in {add_time:.3f}s")
+    print(f"   {result['vectors_added']} Vektoren hinzugefügt in {add_time:.3f}s")
 
     # Vektoren abfragen
     print(f"🔍 Frage Vektoren ab...")
-    query_vec_np = vecs_np[0]
+    query_vector = vectors_np[0]
     k_val = 3
     
     start_time = time.time()
-    indices, distances, result_metadata = store.query(query_vec_np, k=k_val)
+    indices, distances, result_metadata = store.query(query_vector, k=k_val)
     query_time = time.time() - start_time
     
     print(f"   Query abgeschlossen in {query_time:.3f}s")
@@ -91,60 +80,35 @@ def run_basic_demo():
 
     # Batch-Query-Demo
     print(f"🧠 Teste Batch-Query...")
-    batch_query_vecs_np = vecs_np[:3]
+    batch_query_vectors = vectors_np[:3]
     k_batch = 2
     
     start_time = time.time()
-    all_indices, all_distances, all_meta = store.batch_query(batch_query_vecs_np, k=k_batch)
+    batch_results = store.batch_query(batch_query_vectors, k=k_batch)
     batch_time = time.time() - start_time
-    print(f"   Batch-Query ({batch_query_vecs_np.shape[0]} Queries) abgeschlossen in {batch_time:.3f}s")
-    for i in range(len(all_indices)):
-        print(f"     Ergebnisse für Query {i+1}: {len(all_indices[i])} Treffer")
+    print(f"   Batch-Query ({batch_query_vectors.shape[0]} Queries) abgeschlossen in {batch_time:.3f}s")
+    for i, (indices, distances, metadata) in enumerate(batch_results):
+        print(f"     Ergebnisse für Query {i+1}: {len(indices)} Treffer")
 
     # Store-Statistiken
     print(f"📊 Store-Statistiken:")
-    stats = store.get_comprehensive_stats()
+    stats = store.get_stats()
     print(f"   Vektoren: {stats.get('vector_count', 0)}")
     print(f"   Dimension: {stats.get('dimension', 'N/A')}")
+    print(f"   Metrik: {stats.get('metric', 'N/A')}")
+    print(f"   Speicherverbrauch: {stats.get('memory_usage_mb', 0):.2f} MB")
 
-    # Vektor löschen
-    print(f"🗑️ Lösche Vektor mit id 'chunk_1'...")
-    # Diese Logik zum Löschen ist unsicher, wenn Metadaten nicht eindeutig sind.
-    # Für eine Demo ist es aber in Ordnung.
-    idx_to_delete = -1
-    if store._metadata:
-      for i, m in enumerate(store._metadata):
-          if m.get("id") == "chunk_1":
-              idx_to_delete = i
-              break
-    
-    if idx_to_delete != -1:
-        # Die delete_vectors-Methode muss in der Store-Klasse existieren.
-        # Wir nehmen an, sie existiert und erwartet eine Liste von Indizes.
-        if hasattr(store, 'delete_vectors'):
-            deleted_count = store.delete_vectors([idx_to_delete])
-            print(f"   {deleted_count} Vektor(en) gelöscht.")
-        else:
-            print("   Löschfunktion 'delete_vectors' nicht im Store implementiert.")
-    else:
-        print(f"   Vektor mit id 'chunk_1' nicht gefunden.")
-
-    # Finale Statistiken
-    final_stats = store.get_comprehensive_stats()
-    print(f"📊 Finale Statistiken:")
-    print(f"   Vektoren: {final_stats.get('vector_count', 0)}")
-
-    # Aufräumen
+    # Cleanup
     cleanup_store(store)
-    print(f"✅ Basis-Demo (V2) erfolgreich abgeschlossen!")
+    print(f"✅ Basis-Demo erfolgreich abgeschlossen!")
 
-def run_performance_demo_local():
+def run_performance_demo():
     """Performance-Demo mit VectorStore"""
-    print("\n🚀 Performance Demo (Lokal mit VectorStore Klasse)")
+    print("\n🚀 Performance Demo")
     print("=" * 50)
     
-    user_id = "perf_user_v2"
-    model_id = "performance_test_v2"
+    user_id = "perf_user"
+    model_id = "performance_test"
     store = get_demo_store(user_id, model_id)
 
     sizes = [100, 500, 1000]
@@ -153,83 +117,194 @@ def run_performance_demo_local():
     for size in sizes:
         print(f"\n📈 Teste mit {size} Vektoren (Dim: {dim})...")
         
-        vecs_np = np.random.normal(size=(size, dim)).astype(np.float32)
-        meta = [{"id": f"vec_{i}", "batch": "perf_test_v2"} for i in range(size)]
+        vectors_np = np.random.normal(size=(size, dim)).astype(np.float32)
+        metadata = [{"id": f"vec_{i}", "batch": "perf_test"} for i in range(size)]
         
+        # Benchmark Addition
         start_time = time.perf_counter()
-        store.add_vectors(vecs_np, meta)
+        add_result = store.add_vectors(vectors_np, metadata)
         add_time = time.perf_counter() - start_time
         
-        query_vec_np = np.random.normal(size=(dim,)).astype(np.float32)
-
+        # Benchmark Queries
+        query_vector = np.random.normal(size=(dim,)).astype(np.float32)
         query_times = []
-        # Führe mindestens eine Query aus
-        for _ in range(max(1, min(30, size // 10))):
+        
+        # Führe mehrere Queries aus
+        num_queries = min(20, size // 10) if size > 10 else 1
+        for _ in range(num_queries):
             q_start_time = time.perf_counter()
-            store.query(query_vec_np, k=10, use_hnsw=True)
+            indices, distances, metadata_results = store.query(query_vector, k=5)
             query_times.append(time.perf_counter() - q_start_time)
         
         avg_query_time_ms = (sum(query_times) / len(query_times)) * 1000 if query_times else 0
+        add_rate = size / add_time if add_time > 0 else 0
         
-        print(f"   Hinzufügen-Zeit: {add_time:.3f}s ({size/add_time if add_time > 0 else float('inf'):.1f} Vektoren/s)")
-        print(f"   Avg. Query-Zeit (HNSW, k=10): {avg_query_time_ms:.3f}ms")
+        print(f"   Hinzufügen: {add_time:.3f}s ({add_rate:.1f} Vektoren/s)")
+        print(f"   Avg. Query-Zeit: {avg_query_time_ms:.3f}ms")
+        print(f"   QPS: {1000/avg_query_time_ms:.1f}" if avg_query_time_ms > 0 else "   QPS: N/A")
     
     cleanup_store(store)
-    print(f"✅ Lokale Performance-Demo abgeschlossen!")
+    print(f"✅ Performance-Demo abgeschlossen!")
 
-def run_advanced_demo_local():
+def run_advanced_demo():
     """Erweiterte Features Demo"""
-    print("\n🔧 Erweiterte Features Demo (Lokal mit VectorStore Klasse)")
+    print("\n🔧 Erweiterte Features Demo")
     print("=" * 50)
     
-    user_id = "advanced_user_v2"
-    model_id = "advanced_test_v2"
-    # Verwende eine Konfiguration mit kleinerer Dimension für diesen Test
-    adv_config = demo_vs_config
-    adv_config.dimension = 128
-    store = VectorStore(str(DEMO_BASE_PATH / f"user_{user_id}" / model_id), config=adv_config)
+    user_id = "advanced_user"
+    model_id = "advanced_test"
+    
+    # Verwende kleinere Dimension für Demo
+    config = MLXVectorStoreConfig(
+        dimension=128,
+        metric="cosine",
+        enable_hnsw=False,
+        jit_compile=True
+    )
+    store_path = DEMO_BASE_PATH / f"user_{user_id}" / model_id
+    store = MLXVectorStore(str(store_path), config=config)
+    
     dim = store.config.dimension
 
-    vecs_np = np.random.normal(size=(20, dim)).astype(np.float32)
-    meta = [
+    # Test-Daten mit verschiedenen Metadaten erstellen
+    vectors_np = np.random.normal(size=(20, dim)).astype(np.float32)
+    metadata = [
         {"id": f"doc_{i}", "category": "A" if i < 10 else "B", "priority": i % 3, "lang": "de" if i % 2 == 0 else "en"}
-        for i in range(vecs_np.shape[0])
+        for i in range(vectors_np.shape[0])
     ]
-    store.add_vectors(vecs_np, meta)
+    store.add_vectors(vectors_np, metadata)
 
     print(f"🔍 Teste Metadaten-Filterung...")
-    query_np_adv = vecs_np[0]
+    query_vector = vectors_np[0]
 
     # Filter nach Kategorie 'A'
-    _, _, cat_a_results_meta = store.query(query_np_adv, k=10, filter_metadata={"category": "A"})
-    print(f"   Ergebnisse für Kategorie 'A': {len(cat_a_results_meta)}")
-    assert all(m["category"] == "A" for m in cat_a_results_meta)
+    indices, distances, cat_a_results = store.query(query_vector, k=10, filter_metadata={"category": "A"})
+    print(f"   Ergebnisse für Kategorie 'A': {len(cat_a_results)}")
+    if cat_a_results:
+        assert all(m["category"] == "A" for m in cat_a_results), "Filter funktioniert nicht korrekt"
 
     # Filter nach Priorität 1 UND Sprache 'en'
-    _, _, prio_lang_results_meta = store.query(query_np_adv, k=10, filter_metadata={"priority": 1, "lang": "en"})
-    print(f"   Ergebnisse für Priorität 1 & Sprache 'en': {len(prio_lang_results_meta)}")
-    assert all(m["priority"] == 1 and m["lang"] == "en" for m in prio_lang_results_meta)
+    indices, distances, prio_lang_results = store.query(query_vector, k=10, filter_metadata={"priority": 1, "lang": "en"})
+    print(f"   Ergebnisse für Priorität 1 & Sprache 'en': {len(prio_lang_results)}")
+    if prio_lang_results:
+        assert all(m["priority"] == 1 and m["lang"] == "en" for m in prio_lang_results), "Filter funktioniert nicht korrekt"
 
     # Testfall: Filter, der keine Ergebnisse liefert
-    _, _, no_results_meta = store.query(query_np_adv, k=10, filter_metadata={"category": "C"})
-    print(f"   Ergebnisse für nicht existente Kategorie 'C': {len(no_results_meta)}")
-    assert len(no_results_meta) == 0
+    indices, distances, no_results = store.query(query_vector, k=10, filter_metadata={"category": "C"})
+    print(f"   Ergebnisse für nicht existente Kategorie 'C': {len(no_results)}")
+    assert len(no_results) == 0, "Filter sollte keine Ergebnisse liefern"
+
+    # Store-Optimierung testen
+    print(f"⚙️ Teste Store-Optimierung...")
+    start_time = time.time()
+    store.optimize()
+    optimize_time = time.time() - start_time
+    print(f"   Optimierung abgeschlossen in {optimize_time:.3f}s")
+
+    # Health Check
+    print(f"🏥 Teste Health Check...")
+    health = store.health_check()
+    print(f"   Gesundheitsstatus: {'✅ Gesund' if health['healthy'] else '❌ Probleme erkannt'}")
+    if not health['healthy']:
+        print(f"   Probleme: {health.get('issues', [])}")
 
     cleanup_store(store)
-    print(f"✅ Erweiterte Demo (V2) abgeschlossen!")
+    print(f"✅ Erweiterte Demo abgeschlossen!")
+
+def run_mlx_integration_demo():
+    """Demo der MLX-Integration"""
+    print("\n🍎 MLX Integration Demo")
+    print("=" * 50)
+    
+    # Test MLX-spezifische Funktionen
+    print("🧪 Teste MLX-Arrays direkt...")
+    
+    user_id = "mlx_user"
+    model_id = "mlx_test"
+    store = get_demo_store(user_id, model_id)
+    
+    # Erstelle MLX-Arrays direkt
+    mlx_vectors = mx.random.normal((50, 384), dtype=mx.float32)
+    metadata = [{"id": f"mlx_vec_{i}", "type": "mlx_native"} for i in range(50)]
+    
+    print("   Teste Addition von MLX-Arrays...")
+    start_time = time.time()
+    result = store.add_vectors(mlx_vectors, metadata)
+    add_time = time.time() - start_time
+    print(f"   {result['vectors_added']} MLX-Vektoren hinzugefügt in {add_time:.3f}s")
+    
+    # Query mit MLX-Array
+    print("   Teste Query mit MLX-Array...")
+    mlx_query = mx.random.normal((384,), dtype=mx.float32)
+    
+    start_time = time.time()
+    indices, distances, results = store.query(mlx_query, k=5)
+    query_time = time.time() - start_time
+    print(f"   MLX-Query abgeschlossen in {query_time:.3f}s")
+    print(f"   Gefunden: {len(indices)} Ergebnisse")
+    
+    # Teste kompilierte Funktionen
+    print("⚡ Teste kompilierte MLX-Funktionen...")
+    store._warmup_kernels()
+    print("   ✅ Kernel-Warmup abgeschlossen")
+    
+    # Performance-Vergleich: NumPy vs MLX
+    print("📊 Performance-Vergleich: NumPy vs MLX...")
+    
+    numpy_vectors = np.random.rand(100, 384).astype(np.float32)
+    mlx_vectors = mx.array(numpy_vectors)
+    query_np = numpy_vectors[0]
+    query_mx = mx.array(query_np)
+    
+    # NumPy Query
+    start_time = time.time()
+    store.query(query_np, k=10)
+    numpy_time = time.time() - start_time
+    
+    # MLX Query
+    start_time = time.time()
+    store.query(query_mx, k=10)
+    mlx_time = time.time() - start_time
+    
+    speedup = numpy_time / mlx_time if mlx_time > 0 else 1.0
+    print(f"   NumPy Query: {numpy_time*1000:.3f}ms")
+    print(f"   MLX Query: {mlx_time*1000:.3f}ms")
+    print(f"   MLX Speedup: {speedup:.2f}x")
+    
+    cleanup_store(store)
+    print(f"✅ MLX Integration Demo abgeschlossen!")
 
 def main():
     """Führt alle Demo-Funktionen aus."""
     try:
-        run_basic_demo()
-        run_performance_demo_local()
-        run_advanced_demo_local()
+        print("🍎 MLX Vector Database - Vollständige Demo")
+        print("⚡ Optimiert für Apple Silicon")
+        print("=" * 60)
         
-        print(f"\n🎉 Alle lokalen Demos (V2) erfolgreich abgeschlossen!")
-        print(f"📖 Für API-Tests, starten Sie den Server und verwenden Sie die entsprechenden API-Demo-Skripte.")
+        # MLX System Test
+        print("🔧 Teste MLX System...")
+        test_array = mx.random.normal((10, 10))
+        mx.eval(test_array)
+        print(f"   ✅ MLX funktioniert: Device = {mx.default_device()}")
+        
+        # Führe alle Demos aus
+        run_basic_demo()
+        run_performance_demo()
+        run_advanced_demo()
+        run_mlx_integration_demo()
+        
+        print(f"\n🎉 Alle Demos erfolgreich abgeschlossen!")
+        print(f"📖 Für API-Tests, starten Sie den Server mit:")
+        print(f"   python main.py")
+        print(f"📝 Dann testen Sie mit:")
+        print(f"   python working_test_fixed.py")
         
     except Exception as e:
         logger.error(f"❌ Demo fehlgeschlagen: {e}", exc_info=True)
+        print(f"\n💡 Troubleshooting-Tipps:")
+        print(f"   1. Stellen Sie sicher, dass MLX installiert ist: pip install mlx")
+        print(f"   2. Verwenden Sie Apple Silicon (M1/M2/M3)")
+        print(f"   3. Prüfen Sie die Python-Version (>=3.9)")
 
 if __name__ == "__main__":
     main()

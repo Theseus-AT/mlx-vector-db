@@ -1,14 +1,6 @@
 """
 MLX Vector Database - FastAPI Application
-Optimized for Apple Silicon with MLX 0.25.2
-
-Key Features:
-- MLX-native vector operations  
-- Async request handling
-- Automatic kernel warmup
-- Connection pooling
-- Performance monitoring
-- Production-ready configuration
+Korrigierte Version ohne problematische Middleware
 """
 
 import os
@@ -17,7 +9,6 @@ import logging
 import time
 from contextlib import asynccontextmanager
 from typing import Dict, Any
-import threading
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -26,7 +17,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 import mlx.core as mx
 
-# Import our optimized modules
+# Import our modules
 from api.routes.vectors import router as vectors_router, store_manager
 from api.routes.admin import router as admin_router
 from api.routes.performance import router as performance_router
@@ -50,7 +41,6 @@ performance_metrics = {
     "mlx_warmup_time": 0.0
 }
 
-# In main.py, nach den Imports hinzufügen:
 def create_error_response(message: str, error_code: str = "ERROR") -> Dict[str, Any]:
     """Create a standardized error response"""
     return {
@@ -103,7 +93,6 @@ async def lifespan(app: FastAPI):
     # Cleanup resources if needed
     logger.info("✅ Shutdown complete")
 
-
 # Create FastAPI application
 app = FastAPI(
     title="MLX Vector Database",
@@ -125,7 +114,6 @@ app.add_middleware(
 )
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)
-
 
 # Request tracking middleware
 @app.middleware("http")
@@ -166,7 +154,6 @@ async def track_requests(request: Request, call_next):
             )
         )
 
-
 # Exception handlers
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
@@ -179,7 +166,6 @@ async def http_exception_handler(request: Request, exc: HTTPException):
         )
     )
 
-
 @app.exception_handler(ValueError)
 async def value_error_handler(request: Request, exc: ValueError):
     """Handle validation errors"""
@@ -190,7 +176,6 @@ async def value_error_handler(request: Request, exc: ValueError):
             error_code="VALIDATION_ERROR"
         )
     )
-
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
@@ -204,13 +189,11 @@ async def general_exception_handler(request: Request, exc: Exception):
         )
     )
 
-
 # Include API routers
 app.include_router(vectors_router)
 app.include_router(admin_router)
 app.include_router(performance_router)
 app.include_router(monitoring_router)
-
 
 # Root endpoint
 @app.get("/")
@@ -233,7 +216,6 @@ async def root():
             "Async Request Handling"
         ]
     }
-
 
 # Health check endpoint
 @app.get("/health")
@@ -272,7 +254,6 @@ async def health_check():
     status_code = 200 if mlx_healthy else 503
     return JSONResponse(content=health_status, status_code=status_code)
 
-
 # System information endpoint
 @app.get("/system/info")
 async def system_info():
@@ -302,7 +283,6 @@ async def system_info():
         "store_manager": store_manager.get_stats()
     }
 
-
 # Configuration endpoint
 @app.get("/config")
 async def get_config():
@@ -325,7 +305,6 @@ async def get_config():
             "automatic_optimization": True
         }
     }
-
 
 # Debug endpoints (only in development)
 if os.getenv("ENVIRONMENT") == "development":
@@ -350,21 +329,20 @@ if os.getenv("ENVIRONMENT") == "development":
             # Test various MLX operations
             test_data = mx.random.normal((100, 384))
             normalized = test_data / mx.linalg.norm(test_data, axis=1, keepdims=True)
-            similarity = mx.dot(normalized, normalized.T)
+            similarity = mx.matmul(normalized, normalized.T)
             mx.eval(similarity)
             
             return {
                 "mlx_working": True,
                 "test_shape": test_data.shape,
                 "device": str(mx.default_device()),
-                "operations_tested": ["random", "norm", "dot", "eval"]
+                "operations_tested": ["random", "norm", "matmul", "eval"]
             }
         except Exception as e:
             return {
                 "mlx_working": False,
                 "error": str(e)
             }
-
 
 # Production configuration
 def create_production_app():
@@ -375,7 +353,6 @@ def create_production_app():
     app.openapi_url = None
     
     return app
-
 
 # Development server configuration
 def run_development_server():
@@ -390,7 +367,6 @@ def run_development_server():
         access_log=True
     )
 
-
 # Production server configuration  
 def run_production_server():
     """Run production server with optimized settings"""
@@ -404,20 +380,6 @@ def run_production_server():
         server_header=False,
         date_header=False
     )
-
-
-if __name__ == "__main__":
-    # Check environment and run appropriate server
-    env = os.getenv("ENVIRONMENT", "development")
-    
-    if env == "production":
-        logger.info("🚀 Starting production server...")
-        run_production_server()
-    else:
-        logger.info("🛠️ Starting development server...")
-        run_development_server()
-
-# main.py - Füge am Ende der Datei hinzu (nach dem if __name__ == "__main__" Block)
 
 def main():
     """Main entry point when running as script"""
@@ -436,7 +398,7 @@ def main():
             print("Usage: python main.py [production|development]")
             sys.exit(1)
     else:
-        # Default to development based on environment
+        # Default based on environment
         env = os.getenv("ENVIRONMENT", "development")
         
         if env == "production":
@@ -446,6 +408,5 @@ def main():
             logger.info("🛠️ Starting development server...")
             run_development_server()
 
-# Korrigiere auch den bestehenden if __name__ == "__main__" Block:
 if __name__ == "__main__":
     main()
