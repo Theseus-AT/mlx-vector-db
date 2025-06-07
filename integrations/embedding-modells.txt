@@ -1,0 +1,115 @@
+# MLX Embedding Models - Copy & Paste Liste
+# Für die VectorDB Configuration
+
+# ===========================================
+# STANDARD MODEL (Default für VectorDB)
+# ===========================================
+mlx-community/multilingual-e5-small-mlx
+
+# ===========================================
+# MULTILINGUAL MODELS (100+ Sprachen)
+# ===========================================
+
+# Small - Schnell und effizient (384D)
+mlx-community/multilingual-e5-small-mlx
+
+# Base - Ausgewogen zwischen Speed und Qualität (768D)
+mlx-community/multilingual-e5-base-mlx
+
+# Large - Beste Qualität für Produktion (1024D)
+mlx-community/multilingual-e5-large-mlx
+
+# ===========================================
+# ENGLISH OPTIMIZED MODELS
+# ===========================================
+
+# MiniLM - Sehr schnell für English (384D)
+mlx-community/all-MiniLM-L6-v2-mlx
+
+# MPNet - Hohe Qualität für English (768D)
+mlx-community/all-mpnet-base-v2-mlx
+
+# BGE Small - Effizient und schnell (384D)
+mlx-community/bge-small-en-v1.5-mlx
+
+# ===========================================
+# BERT VARIANTS (Klassische Modelle)
+# ===========================================
+
+# BERT Base - Standard BERT (768D)
+mlx-community/bert-base-uncased-mlx
+
+# BERT Large - Performance BERT (1024D) 
+mlx-community/bert-large-uncased-mlx
+
+# ===========================================
+# GENERAL PURPOSE MODELS
+# ===========================================
+
+# GTE Base - Vielseitig einsetzbar (768D)
+mlx-community/gte-base-mlx
+
+# ===========================================
+# HIGH-PERFORMANCE MODELS (Viel RAM nötig)
+# ===========================================
+
+# E5 Mistral 7B - Sehr hohe Qualität (4096D, ~8GB RAM)
+mlx-community/e5-mistral-7b-instruct-mlx
+
+# ===========================================
+# DOWNLOAD COMMANDS
+# ===========================================
+
+# Automatisch herunterladen mit MLX-LM:
+# python -c "from mlx_lm import load; load('mlx-community/multilingual-e5-small-mlx')"
+
+# Oder manuell mit Hugging Face CLI:
+# huggingface-cli download mlx-community/multilingual-e5-small-mlx
+
+# ===========================================
+# MEMORY REQUIREMENTS
+# ===========================================
+
+# 384D Models:  ~0.5GB RAM
+# 768D Models:  ~1.0GB RAM  
+# 1024D Models: ~1.5GB RAM
+# 4096D Models: ~8.0GB RAM
+
+# ===========================================
+# PERFORMANCE GUIDE
+# ===========================================
+
+# Für Speed:        mlx-community/all-MiniLM-L6-v2-mlx
+# Für Multilingual: mlx-community/multilingual-e5-small-mlx (DEFAULT)
+# Für Qualität:     mlx-community/multilingual-e5-large-mlx
+# Für English:      mlx-community/all-mpnet-base-v2-mlx
+# Für Produktion:   mlx-community/multilingual-e5-small-mlx
+
+# ===========================================
+# USAGE IN CODE
+# ===========================================
+
+# Standard Multilingual Model verwenden:
+# embedding_model = MLXEmbeddingFactory.create_embedding()
+
+# Spezifisches Model verwenden:
+# embedding_model = MLXEmbeddingFactory.create_embedding("mlx-community/all-mpnet-base-v2-mlx")
+
+# Empfohlenes Model für Use Case:
+# model_id = MLXEmbeddingFactory.get_recommended_model("multilingual")
+# embedding_model = MLXEmbeddingFactory.create_embedding(model_id)
+
+# ===========================================
+# MODEL URLS (für manuelle Downloads)
+# ===========================================
+
+# Multilingual E5 Small: https://huggingface.co/mlx-community/multilingual-e5-small-mlx
+# Multilingual E5 Base:  https://huggingface.co/mlx-community/multilingual-e5-base-mlx
+# Multilingual E5 Large: https://huggingface.co/mlx-community/multilingual-e5-large-mlx
+# MiniLM L6 v2:          https://huggingface.co/mlx-community/all-MiniLM-L6-v2-mlx
+# MPNet Base v2:         https://huggingface.co/mlx-community/all-mpnet-base-v2-mlx
+# BERT Base:             https://huggingface.co/mlx-community/bert-base-uncased-mlx
+# BERT Large:            https://huggingface.co/mlx-community/bert-large-uncased-mlx
+# GTE Base:              https://huggingface.co/mlx-community/gte-base-mlx
+# BGE Small:             https://huggingface.co/mlx-community/bge-small-en-v1.5-mlx
+# E5 Mistral 7B:         https://huggingface.co/mlx-community/e5-mistral-7b-instruct-mlx

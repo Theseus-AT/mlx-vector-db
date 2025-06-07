@@ -20,7 +20,7 @@
 
 | Vector Count | QPS | Latency (ms) | Memory | Hardware |
 |--------------|-----|--------------|--------|----------|
-| **1,000,000** | **903.89** | **1.11** | **2.86 GB** | **M2/M3** |
+| **1,000,000** | **903.89** | **1.11** | **2.86 GB** | **M3 Pro** |
 | 50,000 | 1,808 | 0.55 | 76 MB | M2/M3 |
 | 10,000 | 921 | 0.58 | 15 MB | M2/M3 |
 
@@ -29,7 +29,10 @@
 - **🥈 #2-3 Performance**: Competing with FAISS and ChromaDB
 - **🥇 #1 Apple Silicon**: Native MLX optimization
 - **🥇 #1 Simplicity**: 5-minute setup vs hours
-
+Test-Specs:
+Macbook Pro M3 Pro
+18 GB
+512GB
 ---
 
 ## ✨ **Key Features**

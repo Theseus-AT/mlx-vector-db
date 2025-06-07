@@ -47,30 +47,71 @@ from service.optimized_vector_store import MLXVectorStore
 class EmbeddingModelConfig:
     """Konfiguration für Embedding-Modelle"""
     model_path: str
-    model_type: str  # "sentence-transformer", "mlx-lm", "mock"
+    model_type: str
     dimension: int
     max_sequence_length: int = 512
     batch_size: int = 32
-    quantization: Optional[str] = None
-    trust_remote_code: bool = False
 
-# Vereinfachte, funktionierende Modell-Konfigurationen
+# ====================================================================
+# NEUE, BEREINIGTE UND GETESTETE MODELL-KONFIGURATION
+# ====================================================================
 SUPPORTED_EMBEDDING_MODELS = {
+    # --- Standard-Modelle (via Sentence-Transformers für maximale Kompatibilität) ---
+    "all-MiniLM-L6-v2": EmbeddingModelConfig(
+        model_path="sentence-transformers/all-MiniLM-L6-v2",
+        model_type="sentence-transformer",  # Nutzt die robustere Lade-Methode
+        dimension=384,
+    ),
     "multilingual-e5-small": EmbeddingModelConfig(
         model_path="intfloat/multilingual-e5-small",
-        model_type="sentence-transformer" if SENTENCE_TRANSFORMERS_AVAILABLE else "mock",
+        model_type="sentence-transformer",  # Nutzt die robustere Lade-Methode
         dimension=384,
-        max_sequence_length=512,
-        batch_size=64
     ),
+    "all-mpnet-base-v2": EmbeddingModelConfig(
+        model_path="sentence-transformers/all-mpnet-base-v2",
+        model_type="sentence-transformer",
+        dimension=768,
+    ),
+    "multilingual-e5-base": EmbeddingModelConfig(
+        model_path="intfloat/multilingual-e5-base",
+        model_type="sentence-transformer",
+        dimension=768,
+    ),
+
+    # --- MLX-LM Native Modelle (FUNKTIONIERENDE Alternativen) ---
+    # WICHTIG: Nur Generative LLMs funktionieren mit MLX-LM, nicht dedizierte Embedding-Modelle
+    "Qwen2.5-0.5B-Instruct-4bit-mlx": EmbeddingModelConfig(
+        model_path="mlx-community/Qwen2.5-0.5B-Instruct-4bit-mlx",
+        model_type="mlx-lm",  # Wird mit mlx_lm.load geladen
+        dimension=896,  # Qwen2.5-0.5B hidden dimension
+    ),
+    "Llama-3.2-1B-Instruct-4bit-mlx": EmbeddingModelConfig(
+        model_path="mlx-community/Llama-3.2-1B-Instruct-4bit-mlx", 
+        model_type="mlx-lm",
+        dimension=2048,  # Llama-3.2-1B hidden dimension
+    ),
+    
+    # --- Mock Modelle für Testing ---
     "mock-384": EmbeddingModelConfig(
         model_path="mock",
         model_type="mock",
         dimension=384,
-        max_sequence_length=512,
-        batch_size=32
-    )
+    ),
+    "mock-768": EmbeddingModelConfig(
+        model_path="mock",
+        model_type="mock", 
+        dimension=768,
+    ),
 }
+
+# NEUE STANDARD-MODELL-LISTE FÜR DEN BENCHMARK
+MODELS_TO_TEST = [
+    "all-MiniLM-L6-v2",           # Sentence-Transformers (funktioniert)
+    "multilingual-e5-small",      # Sentence-Transformers (funktioniert) 
+    "all-mpnet-base-v2",          # Sentence-Transformers (funktioniert)
+    "multilingual-e5-base",       # Sentence-Transformers (funktioniert)
+    # "Qwen2.5-0.5B-Instruct-4bit-mlx",  # MLX-LM (nur wenn gewünscht, aber nicht für Embeddings optimiert)
+]
 
 # =================== MOCK EMBEDDING MODEL ===================
 

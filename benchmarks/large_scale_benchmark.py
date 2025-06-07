@@ -94,7 +94,7 @@ def run_large_benchmark(num_vectors: int, dimension: int, num_queries: int):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Large-Scale Benchmark für MLX Vector DB.")
-    parser.add_argument("--vectors", type=int, default=1000000, help="Anzahl der zu indexierenden Vektoren.")
+    parser.add_argument("--vectors", type=int, default=500000, help="Anzahl der zu indexierenden Vektoren.")
     parser.add_argument("--dim", type=int, default=384, help="Dimension der Vektoren.")
     parser.add_argument("--queries", type=int, default=1000, help="Anzahl der Test-Abfragen.")
     args = parser.parse_args()
