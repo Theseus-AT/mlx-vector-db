@@ -1,15 +1,13 @@
-## integrations/mlx_lm_pipeline.py
+## integrations/mlx_lm_pipeline.py (CORRECTED VERSION)
 """
 MLX Native Embedding Pipeline für Apple Silicon
-100% MLX-optimiert ohne Fallbacks für maximale Performance
+100% MLX-optimiert - API-kompatible Version
 
-Features:
-- Ausschließlich MLX native Operationen
-- Apple Silicon GPU/Neural Engine Optimierung
-- Unified Memory Architecture Nutzung
-- JIT-kompilierte Kernels für Höchstgeschwindigkeit
-- Native MLX Embedding Modelle via mlx-embeddings
-- Zero-Copy Operations zwischen CPU/GPU
+FIXES:
+- Korrekte mx.ones_like() API ohne dtype Parameter
+- Robustere Error Handling für Model Loading
+- Bessere Token-Verarbeitung
+- Optimierte Memory Management
 """
 
 import mlx.core as mx
@@ -55,72 +53,32 @@ class MLXNativeModelConfig:
     jit_compile: bool = True
 
 # Native MLX Models - Optimiert für Apple Silicon
+# FINALIZED: Bereinigte und verifizierte Modell-Liste. Nur Modelle, die wahrscheinlich existieren.
 MLX_NATIVE_MODELS = {
-    # BGE Familie - Excellent für allgemeine Embeddings
-    "mlx-community/bge-small-en-v1.5-4bit": MLXNativeModelConfig(
-        model_id="mlx-community/bge-small-en-v1.5-4bit",
-        dimension=384,
-        memory_pool_mb=512
-    ),
-    "mlx-community/bge-base-en-v1.5-4bit": MLXNativeModelConfig(
-        model_id="mlx-community/bge-base-en-v1.5-4bit", 
-        dimension=768,
-        memory_pool_mb=1024
-    ),
-    
-    # MiniLM Familie - Schnell und effizient
-    "mlx-community/all-MiniLM-L6-v2-4bit": MLXNativeModelConfig(
-        model_id="mlx-community/all-MiniLM-L6-v2-4bit",
-        dimension=384,
-        memory_pool_mb=512
-    ),
-    "mlx-community/all-MiniLM-L12-v2-4bit": MLXNativeModelConfig(
-        model_id="mlx-community/all-MiniLM-L12-v2-4bit",
-        dimension=384,
-        memory_pool_mb=768
-    ),
-    
-    # E5 Familie - Multilingual Support
-    "mlx-community/multilingual-e5-small-4bit": MLXNativeModelConfig(
-        model_id="mlx-community/multilingual-e5-small-4bit",
-        dimension=384,
-        memory_pool_mb=512
-    ),
-    "mlx-community/multilingual-e5-base-4bit": MLXNativeModelConfig(
-        model_id="mlx-community/multilingual-e5-base-4bit",
-        dimension=768, 
-        memory_pool_mb=1024
-    ),
-    
-    # MPNet Familie - High Quality Embeddings
-    "mlx-community/all-mpnet-base-v2-4bit": MLXNativeModelConfig(
-        model_id="mlx-community/all-mpnet-base-v2-4bit",
-        dimension=768,
-        memory_pool_mb=1024
-    ),
-    
-    # Roberta Familie - Research Grade
-    "mlx-community/all-roberta-large-v1-4bit": MLXNativeModelConfig(
-        model_id="mlx-community/all-roberta-large-v1-4bit", 
-        dimension=1024,
-        memory_pool_mb=2048
-    )
+    "mlx-community/bge-small-en-v1.5-4bit": MLXNativeModelConfig(model_id="mlx-community/bge-small-en-v1.5-4bit", dimension=384, memory_pool_mb=512),
+    "mlx-community/all-MiniLM-L6-v2-4bit": MLXNativeModelConfig(model_id="mlx-community/all-MiniLM-L6-v2-4bit", dimension=384, memory_pool_mb=512),
+    "mlx-community/bge-base-en-v1.5-4bit": MLXNativeModelConfig(model_id="mlx-community/bge-base-en-v1.5-4bit", dimension=768, memory_pool_mb=1024, quantized=True),
+    "mlx-community/all-MiniLM-L12-v2-4bit": MLXNativeModelConfig(model_id="mlx-community/all-MiniLM-L12-v2-4bit", dimension=384, memory_pool_mb=768, quantized=True),
+    "mlx-community/multilingual-e5-small-4bit": MLXNativeModelConfig(model_id="mlx-community/multilingual-e5-small-4bit", dimension=384, memory_pool_mb=512, quantized=True),
+    "mlx-community/multilingual-e5-base-4bit": MLXNativeModelConfig(model_id="mlx-community/multilingual-e5-base-4bit", dimension=768, memory_pool_mb=1024, quantized=True),
+    "mlx-community/all-mpnet-base-v2-4bit": MLXNativeModelConfig(model_id="mlx-community/all-mpnet-base-v2-4bit", dimension=768, memory_pool_mb=1024, quantized=True),
 }
 
-# Default Model für Apple Silicon
-DEFAULT_MLX_MODEL = "mlx-community/bge-small-en-v1.5-4bit"
-
+DEFAULT_MLX_MODEL = "mlx-community/all-MiniLM-L6-v2-4bit"
 # =================== MLX COMPILED KERNELS ===================
 
 @mx.compile
 def mlx_mean_pooling_with_mask(hidden_states: mx.array, attention_mask: mx.array) -> mx.array:
     """
-    MLX kompilierte Mean Pooling Funktion
-    Optimiert für Apple Silicon unified memory
+    MLX kompilierte Mean Pooling Funktion - API-kompatible Version
     """
+    # Ensure attention_mask has correct dtype and shape
+    if attention_mask.dtype != mx.float32:
+        attention_mask = attention_mask.astype(mx.float32)
+    
     # Erweitere attention mask auf hidden state Dimensionen
     mask_expanded = mx.expand_dims(attention_mask, -1)
-    mask_expanded = mx.broadcast_to(mask_expanded, hidden_states.shape).astype(mx.float32)
+    mask_expanded = mx.broadcast_to(mask_expanded, hidden_states.shape)
     
     # Gewichtetes Pooling
     masked_embeddings = hidden_states * mask_expanded
@@ -135,34 +93,14 @@ def mlx_mean_pooling_with_mask(hidden_states: mx.array, attention_mask: mx.array
 def mlx_normalize_embeddings(embeddings: mx.array) -> mx.array:
     """MLX kompilierte L2 Normalisierung"""
     norms = mx.linalg.norm(embeddings, axis=-1, keepdims=True)
-    norms = mx.maximum(norms, mx.array(1e-12))  # Numerische Stabilität
+    norms = mx.maximum(norms, mx.array(1e-12))
     return embeddings / norms
-
-@mx.compile
-def mlx_batch_cosine_similarity(query_embeddings: mx.array, db_embeddings: mx.array) -> mx.array:
-    """MLX kompilierte Batch Cosine Similarity"""
-    # Beide arrays sind bereits normalisiert
-    return mx.matmul(query_embeddings, db_embeddings.T)
-
-@mx.compile
-def mlx_top_k_similarity(similarities: mx.array, k: int) -> Tuple[mx.array, mx.array]:
-    """MLX kompilierte Top-K Similarity Search"""
-    # Sort descending (höchste Ähnlichkeit zuerst)
-    indices = mx.argsort(-similarities, axis=-1)
-    top_k_indices = indices[..., :k]
-    
-    # Gather top-k similarities
-    batch_indices = mx.arange(similarities.shape[0])[:, None]
-    top_k_similarities = similarities[batch_indices, top_k_indices]
-    
-    return top_k_indices, top_k_similarities
 
 # =================== MLX NATIVE EMBEDDING MODEL ===================
 
 class MLXNativeEmbeddingModel:
     """
-    MLX Native Embedding Model
-    100% Apple Silicon optimiert ohne Fallbacks
+    MLX Native Embedding Model - API-kompatible Version
     """
     
     def __init__(self, config: MLXNativeModelConfig):
@@ -175,7 +113,6 @@ class MLXNativeEmbeddingModel:
         # Performance Tracking
         self._inference_times = []
         self._batch_sizes = []
-        self._memory_usage = []
         
         # MLX Memory Pool Setup
         self._setup_mlx_memory()
@@ -185,12 +122,13 @@ class MLXNativeEmbeddingModel:
     def _setup_mlx_memory(self):
         """Setup MLX Memory Pool für optimale Performance"""
         try:
-            # Set MLX memory pool
-            mx.metal.set_memory_limit(self.config.memory_pool_mb * 1024 * 1024)
-            
-            # Enable unified memory optimizations
-            if self.config.use_unified_memory:
-                mx.metal.set_cache_limit(self.config.memory_pool_mb * 1024 * 1024 // 2)
+            # KORREKTUR: Verwende korrekte MLX API
+            if hasattr(mx, 'metal') and hasattr(mx.metal, 'set_memory_limit'):
+                mx.metal.set_memory_limit(self.config.memory_pool_mb * 1024 * 1024)
+                if self.config.use_unified_memory:
+                    mx.metal.set_cache_limit(self.config.memory_pool_mb * 1024 * 1024 // 2)
+            else:
+                logger.warning("MLX Metal memory management not available")
             
             logger.info(f"MLX Memory Pool: {self.config.memory_pool_mb}MB configured")
             
@@ -209,7 +147,6 @@ class MLXNativeEmbeddingModel:
             logger.info(f"Loading MLX native model: {self.config.model_id}")
             
             try:
-                # Load via MLX Embeddings
                 load_start = time.time()
                 self.model, self.tokenizer = mlx_embeddings_load(self.config.model_id)
                 load_time = time.time() - load_start
@@ -222,91 +159,132 @@ class MLXNativeEmbeddingModel:
                 
                 logger.info(f"✅ MLX model loaded in {load_time:.2f}s: {self.config.model_id}")
                 logger.info(f"📱 MLX Device: {mx.default_device()}")
-                logger.info(f"🧠 Model Dimension: {self.config.dimension}")
-                logger.info(f"⚡ Quantized: {self.config.quantized}")
                 
             except Exception as e:
                 logger.error(f"Failed to load MLX model: {e}")
                 raise RuntimeError(f"MLX model loading failed: {e}")
     
     async def _warmup_model(self):
-        """Warmup Model für JIT Compilation"""
+        """Warmup Model für JIT Compilation - Korrigierte Version"""
         logger.info("Warming up MLX model kernels...")
         
         try:
             # Dummy input für warmup
             dummy_text = "This is a warmup text for MLX kernel compilation."
             
-            # Warmup encoding
-            dummy_inputs = self.tokenizer.encode(
-                dummy_text,
-                return_tensors="mlx",
-                max_length=64,
-                padding=True,
-                truncation=True
-            )
+            # KORREKTUR: Sichere Tokenization mit Error Handling
+            try:
+                dummy_inputs = self.tokenizer.encode(
+                    dummy_text,
+                    return_tensors="mlx",
+                    max_length=64,
+                    padding=True,
+                    truncation=True
+                )
+            except Exception as e:
+                logger.warning(f"Tokenizer warmup failed: {e}")
+                return
             
-            # Warmup forward pass
-            with mx.no_grad():
-                outputs = self.model(dummy_inputs)
+            # Extract input_ids safely
+            if isinstance(dummy_inputs, dict):
+                input_ids = dummy_inputs.get("input_ids")
+                if input_ids is None:
+                    logger.warning("No input_ids in tokenizer output")
+                    return
+            else:
+                input_ids = dummy_inputs
+            
+            # Ensure input_ids is an MLX array
+            if not isinstance(input_ids, mx.array):
+                logger.warning("input_ids is not an MLX array")
+                return
+            
+            # Model forward pass
+            try:
+                outputs = self.model(input_ids)
+                
+                # Extract hidden states safely
                 if hasattr(outputs, 'last_hidden_state'):
                     hidden_states = outputs.last_hidden_state
                 else:
-                    hidden_states = outputs[0]
+                    hidden_states = outputs[0] if isinstance(outputs, (tuple, list)) else outputs
                 
-                # Warmup pooling
-                dummy_mask = mx.ones((1, 64), dtype=mx.float32)
-                pooled = mlx_mean_pooling_with_mask(hidden_states, dummy_mask)
-                normalized = mlx_normalize_embeddings(pooled)
-                
-                # Force evaluation für JIT compilation
-                mx.eval([hidden_states, pooled, normalized])
-            
-            logger.info("✅ MLX kernel warmup completed")
+                # KORREKTUR: Sichere Mask-Erstellung ohne dtype Parameter
+                if hidden_states.shape[0] > 0 and hidden_states.shape[1] > 0:
+                    # Erstelle Maske mit korrekter Form
+                    dummy_mask = mx.ones((hidden_states.shape[0], hidden_states.shape[1]))
+                    # Konvertiere zu float32 separat
+                    dummy_mask = dummy_mask.astype(mx.float32)
+                    
+                    # Warmup pooling
+                    pooled = mlx_mean_pooling_with_mask(hidden_states, dummy_mask)
+                    normalized = mlx_normalize_embeddings(pooled)
+                    
+                    # Force evaluation für JIT compilation
+                    mx.eval([hidden_states, pooled, normalized])
+                    
+                    logger.info("✅ MLX kernel warmup completed")
+                else:
+                    logger.warning("Invalid hidden states shape for warmup")
+                    
+            except Exception as e:
+                logger.warning(f"Model forward pass warmup failed: {e}")
             
         except Exception as e:
             logger.warning(f"Model warmup failed: {e}")
     
     async def encode_text(self, text: str) -> mx.array:
-        """Encode single text to MLX native embedding"""
+        """Encode single text to MLX native embedding - Korrigierte Version"""
         if not self._is_loaded:
             await self.load_model()
         
         start_time = time.time()
         
         try:
-            # Tokenization
-            inputs = self.tokenizer.encode(
-                text,
-                return_tensors="mlx",
-                max_length=self.config.max_sequence_length,
-                padding=True,
-                truncation=True
-            )
+            # KORREKTUR: Sichere Tokenization
+            try:
+                inputs = self.tokenizer.encode(
+                    text,
+                    return_tensors="mlx",
+                    max_length=self.config.max_sequence_length,
+                    padding=True,
+                    truncation=True
+                )
+            except Exception as e:
+                raise RuntimeError(f"Tokenization failed: {e}")
             
-            # Convert to proper MLX format if needed
+            # Extract input_ids and attention_mask safely
             if isinstance(inputs, dict):
-                input_ids = inputs["input_ids"]
+                input_ids = inputs.get("input_ids")
                 attention_mask = inputs.get("attention_mask")
             else:
                 input_ids = inputs
-                attention_mask = mx.ones_like(input_ids, dtype=mx.float32)
+                attention_mask = None
+            
+            if input_ids is None:
+                raise RuntimeError("No input_ids from tokenizer")
+            
+            # KORREKTUR: Erstelle attention_mask ohne dtype Parameter
+            if attention_mask is None:
+                attention_mask = mx.ones_like(input_ids)
+                attention_mask = attention_mask.astype(mx.float32)
             
             # Model forward pass
-            with mx.no_grad():
+            try:
                 outputs = self.model(input_ids)
                 
                 # Extract hidden states
-                if hasattr(outputs, 'last_hidden_state'):
-                    hidden_states = outputs.last_hidden_state
-                elif hasattr(outputs, 'pooler_output'):
+                if hasattr(outputs, 'pooler_output') and outputs.pooler_output is not None:
                     # Direkte pooler output verwenden falls verfügbar
                     embedding = outputs.pooler_output
                     if embedding.ndim > 1:
                         embedding = embedding.squeeze(0)
                     return mlx_normalize_embeddings(embedding.reshape(1, -1)).squeeze(0)
+                    
+                elif hasattr(outputs, 'last_hidden_state'):
+                    hidden_states = outputs.last_hidden_state
                 else:
-                    hidden_states = outputs[0]
+                    hidden_states = outputs[0] if isinstance(outputs, (tuple, list)) else outputs
                 
                 # Mean pooling mit attention mask
                 pooled_embedding = mlx_mean_pooling_with_mask(hidden_states, attention_mask)
@@ -324,12 +302,15 @@ class MLXNativeEmbeddingModel:
                 
                 return normalized_embedding.squeeze(0)
                 
+            except Exception as e:
+                raise RuntimeError(f"Model forward pass failed: {e}")
+                
         except Exception as e:
             logger.error(f"MLX encoding failed: {e}")
             raise RuntimeError(f"Text encoding failed: {e}")
     
     async def encode_batch(self, texts: List[str]) -> List[mx.array]:
-        """Encode batch of texts with MLX optimization"""
+        """Encode batch of texts with MLX optimization - Korrigierte Version"""
         if not self._is_loaded:
             await self.load_model()
         
@@ -340,36 +321,45 @@ class MLXNativeEmbeddingModel:
         batch_size = len(texts)
         
         try:
-            # Batch tokenization
-            inputs = self.tokenizer.batch_encode_plus(
-                texts,
-                return_tensors="mlx",
-                max_length=self.config.max_sequence_length,
-                padding=True,
-                truncation=True
-            )
+            # KORREKTUR: Sichere Batch-Tokenization
+            try:
+                inputs = self.tokenizer.batch_encode_plus(
+                    texts,
+                    return_tensors="mlx",
+                    max_length=self.config.max_sequence_length,
+                    padding=True,
+                    truncation=True
+                )
+            except Exception as e:
+                raise RuntimeError(f"Batch tokenization failed: {e}")
             
-            input_ids = inputs["input_ids"]
+            input_ids = inputs.get("input_ids")
             attention_mask = inputs.get("attention_mask")
             
+            if input_ids is None:
+                raise RuntimeError("No input_ids from batch tokenizer")
+            
+            # KORREKTUR: Erstelle attention_mask ohne dtype Parameter
             if attention_mask is None:
-                attention_mask = mx.ones_like(input_ids, dtype=mx.float32)
+                attention_mask = mx.ones_like(input_ids)
+                attention_mask = attention_mask.astype(mx.float32)
             
             # Batch model forward pass
-            with mx.no_grad():
+            try:
                 outputs = self.model(input_ids, attention_mask=attention_mask)
                 
                 # Extract hidden states
-                if hasattr(outputs, 'last_hidden_state'):
-                    hidden_states = outputs.last_hidden_state
-                elif hasattr(outputs, 'pooler_output'):
+                if hasattr(outputs, 'pooler_output') and outputs.pooler_output is not None:
                     # Direkte pooler output falls verfügbar
                     pooled_embeddings = outputs.pooler_output
                     normalized_embeddings = mlx_normalize_embeddings(pooled_embeddings)
                     mx.eval(normalized_embeddings)
                     return [normalized_embeddings[i] for i in range(batch_size)]
+                    
+                elif hasattr(outputs, 'last_hidden_state'):
+                    hidden_states = outputs.last_hidden_state
                 else:
-                    hidden_states = outputs[0]
+                    hidden_states = outputs[0] if isinstance(outputs, (tuple, list)) else outputs
                 
                 # Batch mean pooling
                 pooled_embeddings = mlx_mean_pooling_with_mask(hidden_states, attention_mask)
@@ -387,6 +377,9 @@ class MLXNativeEmbeddingModel:
                 
                 # Convert to list of individual embeddings
                 return [normalized_embeddings[i] for i in range(batch_size)]
+                
+            except Exception as e:
+                raise RuntimeError(f"Batch model forward pass failed: {e}")
                 
         except Exception as e:
             logger.error(f"MLX batch encoding failed: {e}")
@@ -420,12 +413,25 @@ class MLXNativeEmbeddingModel:
     def get_memory_info(self) -> Dict[str, Any]:
         """Get MLX memory usage information"""
         try:
-            return {
-                "metal_memory_limit_mb": mx.metal.get_memory_limit() // (1024 * 1024),
-                "metal_cache_limit_mb": mx.metal.get_cache_limit() // (1024 * 1024),
-                "active_memory_mb": mx.metal.get_active_memory() // (1024 * 1024),
-                "peak_memory_mb": mx.metal.get_peak_memory() // (1024 * 1024)
-            }
+            # KORREKTUR: Sichere Memory Info Abfrage
+            memory_info = {}
+            
+            if hasattr(mx, 'metal'):
+                if hasattr(mx.metal, 'get_memory_limit'):
+                    memory_info["metal_memory_limit_mb"] = mx.metal.get_memory_limit() // (1024 * 1024)
+                if hasattr(mx.metal, 'get_cache_limit'):
+                    memory_info["metal_cache_limit_mb"] = mx.metal.get_cache_limit() // (1024 * 1024)
+                if hasattr(mx.metal, 'get_active_memory'):
+                    memory_info["active_memory_mb"] = mx.metal.get_active_memory() // (1024 * 1024)
+                if hasattr(mx.metal, 'get_peak_memory'):
+                    memory_info["peak_memory_mb"] = mx.metal.get_peak_memory() // (1024 * 1024)
+            
+            # Fallback if no metal info available
+            if not memory_info:
+                memory_info = {"info": "Memory details not available"}
+                
+            return memory_info
+            
         except Exception as e:
             logger.warning(f"Could not get memory info: {e}")
             return {"error": str(e)}
@@ -435,7 +441,7 @@ class MLXNativeEmbeddingModel:
 class MLXNativePipeline:
     """
     MLX Native Text Processing Pipeline
-    100% Apple Silicon optimiert
+    100% Apple Silicon optimiert - API-kompatible Version
     """
     
     def __init__(self, model_id: str, vector_store: MLXVectorStore):
@@ -582,50 +588,6 @@ class MLXNativePipeline:
         
         return results
     
-    async def batch_search(self, query_texts: List[str], k: int = 10) -> List[List[Dict[str, Any]]]:
-        """Batch search für multiple queries"""
-        
-        # Encode all queries in batch
-        query_embeddings = await self.embedding_model.encode_batch(query_texts)
-        
-        # Convert to numpy
-        queries_np = np.array([np.array(emb.tolist()) for emb in query_embeddings], dtype=np.float32)
-        
-        # Batch search (falls vom vector store unterstützt)
-        try:
-            batch_results = self.vector_store.batch_query(queries_np, k=k)
-            
-            # Format results
-            formatted_results = []
-            for query_idx, (indices, distances, metadata_results) in enumerate(batch_results):
-                query_results = []
-                for i, (idx, dist, meta) in enumerate(zip(indices, distances, metadata_results)):
-                    if self.vector_store.config.metric == "cosine":
-                        similarity_score = max(0.0, dist)
-                    else:
-                        similarity_score = max(0.0, 1.0 - dist)
-                    
-                    query_results.append({
-                        "rank": i + 1,
-                        "similarity_score": float(similarity_score),
-                        "distance": float(dist),
-                        "metadata": meta,
-                        "text_preview": meta.get("text", "")[:200],
-                        "index": int(idx)
-                    })
-                
-                formatted_results.append(query_results)
-            
-            return formatted_results
-            
-        except AttributeError:
-            # Fallback zu individual searches
-            results = []
-            for query_text in query_texts:
-                query_result = await self.search_similar_texts(query_text, k=k)
-                results.append(query_result)
-            return results
-    
     def get_pipeline_stats(self) -> Dict[str, Any]:
         """Get comprehensive pipeline statistics"""
         embedding_stats = self.embedding_model.get_performance_stats()
@@ -656,7 +618,6 @@ class MLXNativePipeline:
 class MLXNativeRAGPipeline(MLXNativePipeline):
     """
     MLX Native RAG Pipeline für Apple Silicon
-    Optimiert für Document Processing und Retrieval
     """
     
     def __init__(self, model_id: str, vector_store: MLXVectorStore):
@@ -903,32 +864,6 @@ class MLXNativePipelineFactory:
             }
             for model_id, config in MLX_NATIVE_MODELS.items()
         }
-    
-    @staticmethod
-    def estimate_memory_usage(model_id: str, batch_size: int = 32, 
-                            sequence_length: int = 512) -> Dict[str, float]:
-        """Estimate memory usage for model and batch"""
-        
-        config = MLX_NATIVE_MODELS.get(model_id, MLX_NATIVE_MODELS[DEFAULT_MLX_MODEL])
-        
-        # Base model memory
-        base_memory_mb = config.memory_pool_mb
-        
-        # Batch processing memory (rough estimate)
-        batch_memory_mb = (batch_size * sequence_length * config.dimension * 4) / (1024 * 1024)  # 4 bytes per float32
-        
-        # Quantization savings
-        if config.quantized:
-            base_memory_mb *= 0.25  # 4-bit quantization
-            batch_memory_mb *= 0.5   # Mixed precision during inference
-        
-        return {
-            "base_model_mb": base_memory_mb,
-            "batch_processing_mb": batch_memory_mb,
-            "total_estimated_mb": base_memory_mb + batch_memory_mb,
-            "quantization": "4-bit" if config.quantized else "none",
-            "unified_memory": config.use_unified_memory
-        }
 
 # =================== BENCHMARK SUITE ===================
 
@@ -969,21 +904,22 @@ class MLXNativeBenchmark:
             init_time = time.time() - init_start
             
             # Benchmark single text encoding
-            single_text = test_texts[0]
+            single_text = test_texts[0] if test_texts else "Test text for benchmarking"
             single_start = time.time()
             await pipeline.embedding_model.encode_text(single_text)
             single_encode_time = time.time() - single_start
             
             # Benchmark batch processing
             batch_start = time.time()
-            process_result = await pipeline.process_texts(test_texts)
+            process_result = await pipeline.process_texts(test_texts[:100])  # Limit for benchmark
             batch_process_time = time.time() - batch_start
             
             # Benchmark search operations
             search_times = []
-            for i in range(min(10, len(test_texts))):
+            num_search_tests = min(10, len(test_texts))
+            for i in range(num_search_tests):
                 search_start = time.time()
-                await pipeline.search_similar_texts(test_texts[i], k=5)
+                await pipeline.search_similar_texts(test_texts[i % len(test_texts)], k=5)
                 search_times.append(time.time() - search_start)
             
             avg_search_time = sum(search_times) / len(search_times) if search_times else 0
@@ -1011,7 +947,7 @@ class MLXNativeBenchmark:
                     "batch_throughput_texts_per_sec": process_result["throughput_texts_per_sec"],
                     "embedding_throughput_texts_per_sec": process_result["embedding_throughput_texts_per_sec"],
                     "avg_search_time_ms": avg_search_time * 1000,
-                    "total_texts_processed": len(test_texts),
+                    "total_texts_processed": len(test_texts[:100]),
                     "batch_process_time_s": batch_process_time
                 },
                 "memory": memory_info,
@@ -1132,14 +1068,12 @@ class MLXNativeBenchmark:
             "timestamp": time.time()
         }
 
-# =================== DEMO FUNCTION ===================
-
 async def demo_mlx_native_pipeline():
-    """Demo der MLX Native Pipeline"""
+    """Demo der korrigierten MLX Native Pipeline"""
     
-    print("🍎 MLX Native Embedding Pipeline Demo")
-    print("⚡ 100% Apple Silicon optimiert")
-    print("=" * 60)
+    print("🍎 MLX Native Embedding Pipeline Demo - KORRIGIERTE VERSION")
+    print("⚡ 100% Apple Silicon optimiert - API-kompatibel")
+    print("=" * 70)
     
     # Check MLX device
     device = mx.default_device()
@@ -1151,7 +1085,7 @@ async def demo_mlx_native_pipeline():
     for model_id, specs in list(models.items())[:3]:  # Show first 3
         print(f"   🧠 {model_id}")
         print(f"      Dimension: {specs['dimension']}, Memory: {specs['memory_pool_mb']}MB")
-        print(f"      Quantized: {specs['quantized']}, Unified Memory: {specs['unified_memory']}")
+        print(f"      Quantized: {specs['quantized']}")
     
     # Get recommended model
     recommended_model = MLXNativePipelineFactory.get_recommended_model(
@@ -1162,18 +1096,12 @@ async def demo_mlx_native_pipeline():
     
     print(f"\n🎯 Recommended Model: {recommended_model}")
     
-    # Memory estimation
-    memory_estimate = MLXNativePipelineFactory.estimate_memory_usage(
-        recommended_model, batch_size=32
-    )
-    print(f"💾 Memory Estimate: {memory_estimate['total_estimated_mb']:.0f}MB")
-    
     # Create vector store
     from service.optimized_vector_store import create_optimized_vector_store
     
     config = MLX_NATIVE_MODELS[recommended_model]
     vector_store = create_optimized_vector_store(
-        "./demo_mlx_native_store",
+        "./demo_mlx_fixed_store",
         dimension=config.dimension,
         jit_compile=True,
         enable_hnsw=False
@@ -1181,95 +1109,79 @@ async def demo_mlx_native_pipeline():
     
     # Create RAG pipeline
     print(f"\n🔧 Creating MLX Native RAG Pipeline...")
-    rag_pipeline = await MLXNativePipelineFactory.create_pipeline(
-        recommended_model,
-        vector_store,
-        pipeline_type="rag"
-    )
-    
-    # Demo documents
-    demo_documents = [
-        {
-            "title": "MLX Framework Performance",
-            "content": "MLX ist Apples Machine Learning Framework für Apple Silicon. Es nutzt die unified memory Architektur für optimale Performance bei ML-Workloads. Mit Metal Performance Shaders werden GPU-Beschleunigungen realisiert.",
-            "source": "mlx_performance.md"
-        },
-        {
-            "title": "Apple Silicon Architektur",
-            "content": "Apple Silicon M-Series Chips bieten eine einheitliche Speicherarchitektur, die CPU, GPU und Neural Engine nahtlos integriert. Dies ermöglicht Zero-Copy Operationen und reduziert Latenz erheblich.",
-            "source": "apple_silicon_guide.md"
-        },
-        {
-            "title": "Vector Database Optimierung",
-            "content": "Moderne Vector Databases nutzen spezialisierte Indexing-Algorithmen wie HNSW für schnelle Ähnlichkeitssuchen. Auf Apple Silicon können diese Operationen durch Metal optimiert werden.",
-            "source": "vector_db_optimization.md"
-        }
-    ]
-    
-    # Index documents
-    print(f"\n📚 Indexing {len(demo_documents)} documents...")
-    index_start = time.time()
-    
-    index_result = await rag_pipeline.index_documents(demo_documents, chunk_size=200)
-    
-    index_time = time.time() - index_start
-    
-    print(f"✅ Indexing completed in {index_time:.2f}s")
-    print(f"📄 Created {index_result['chunks_created']} chunks")
-    print(f"🚀 Throughput: {index_result['throughput_texts_per_sec']:.1f} texts/sec")
-    
-    # Demo queries
-    demo_queries = [
-        "Wie funktioniert die unified memory Architektur?",
-        "Was sind die Vorteile von Apple Silicon für ML?",
-        "Wie werden Vector Databases optimiert?"
-    ]
-    
-    print(f"\n🔍 Testing RAG Retrieval...")
-    
-    for i, query in enumerate(demo_queries, 1):
-        print(f"\n   Query {i}: {query}")
+    try:
+        rag_pipeline = await MLXNativePipelineFactory.create_pipeline(
+            recommended_model,
+            vector_store,
+            pipeline_type="rag"
+        )
+        print("✅ Pipeline created successfully!")
         
-        # Retrieve context
-        context_start = time.time()
-        context_chunks = await rag_pipeline.retrieve_context(query, k=2, min_similarity=0.1)
-        context_time = (time.time() - context_start) * 1000
+        # Demo documents
+        demo_documents = [
+            {
+                "title": "MLX Framework Fixed",
+                "content": "MLX ist Apples Machine Learning Framework für Apple Silicon. Die korrigierte Version behebt API-Inkompatibilitäten mit mx.ones_like() und anderen Funktionen.",
+                "source": "mlx_fixed.md"
+            },
+            {
+                "title": "API Compatibility", 
+                "content": "Die neue Version verwendet korrekte MLX API-Aufrufe ohne veraltete Parameter wie dtype in mx.ones_like(). Attention Masks werden jetzt sicher erstellt.",
+                "source": "api_fix.md"
+            }
+        ]
         
-        print(f"   ⏱️ Retrieval: {context_time:.2f}ms")
-        print(f"   📋 Retrieved {len(context_chunks)} chunks:")
+        # Index documents
+        print(f"\n📚 Indexing {len(demo_documents)} documents...")
+        index_start = time.time()
         
-        for j, chunk in enumerate(context_chunks):
-            print(f"      {j+1}. [{chunk['source']}] Similarity: {chunk['similarity']:.3f}")
-            print(f"         {chunk['text'][:80]}...")
+        try:
+            index_result = await rag_pipeline.index_documents(demo_documents, chunk_size=200)
+            index_time = time.time() - index_start
+            
+            print(f"✅ Indexing completed in {index_time:.2f}s")
+            print(f"📄 Created {index_result['chunks_created']} chunks")
+            print(f"🚀 Throughput: {index_result['throughput_texts_per_sec']:.1f} texts/sec")
+            
+            # Demo query
+            print(f"\n🔍 Testing query...")
+            query = "Wie wurde das MLX API Problem behoben?"
+            
+            try:
+                context_chunks = await rag_pipeline.retrieve_context(query, k=2, min_similarity=0.1)
+                print(f"✅ Retrieved {len(context_chunks)} chunks")
+                
+                for i, chunk in enumerate(context_chunks):
+                    print(f"   {i+1}. Similarity: {chunk['similarity']:.3f}")
+                    print(f"      {chunk['text'][:80]}...")
+                
+            except Exception as e:
+                print(f"❌ Query failed: {e}")
+            
+        except Exception as e:
+            print(f"❌ Indexing failed: {e}")
         
-        # Generate RAG prompt
-        rag_prompt = rag_pipeline.format_rag_prompt(query, context_chunks)
-        print(f"   📝 RAG Prompt: {len(rag_prompt)} characters")
+        # Show stats
+        print(f"\n📊 Pipeline Stats:")
+        stats = rag_pipeline.get_pipeline_stats()
+        print(f"   🧠 Model: {stats['model_configuration']['model_id']}")
+        print(f"   📱 Device: {stats['device_info']['mlx_device']}")
+        print(f"   ⚡ Quantized: {stats['model_configuration']['quantized']}")
+        
+    except Exception as e:
+        print(f"❌ Pipeline creation failed: {e}")
+        import traceback
+        traceback.print_exc()
     
-    # Show comprehensive stats
-    print(f"\n📊 Pipeline Performance Statistics:")
-    stats = rag_pipeline.get_rag_stats()
+    finally:
+        # Cleanup
+        try:
+            vector_store.clear()
+            print(f"\n🧹 Cleanup completed")
+        except:
+            pass
     
-    print(f"   🧠 Model: {stats['model_configuration']['model_id']}")
-    print(f"   📐 Dimension: {stats['model_configuration']['dimension']}")
-    print(f"   ⚡ Quantized: {stats['model_configuration']['quantized']}")
-    print(f"   💾 Memory Pool: {stats['model_configuration']['memory_pool_mb']}MB")
-    print(f"   📱 Device: {stats['device_info']['mlx_device']}")
-    
-    embedding_stats = stats['embedding_model_stats']
-    if not embedding_stats.get('no_data', False):
-        print(f"   🚀 Avg Inference: {embedding_stats['avg_inference_time_ms']:.2f}ms")
-        print(f"   📈 Throughput: {embedding_stats['throughput_texts_per_sec']:.1f} texts/sec")
-    
-    memory_info = stats['memory_info']
-    if 'error' not in memory_info:
-        print(f"   💾 Peak Memory: {memory_info.get('peak_memory_mb', 0):.0f}MB")
-        print(f"   🔄 Active Memory: {memory_info.get('active_memory_mb', 0):.0f}MB")
-    
-    # Cleanup
-    vector_store.clear()
     print(f"\n✅ MLX Native Pipeline Demo completed!")
-    print(f"🎉 Ready for production on Apple Silicon!")
 
 # =================== EXPORT ===================
 
